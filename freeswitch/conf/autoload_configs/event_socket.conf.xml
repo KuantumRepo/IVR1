@@ -1,0 +1,11 @@
+<configuration name="event_socket.conf" description="Socket Client">
+  <settings>
+    <param name="nat-map" value="false"/>
+    <param name="listen-ip" value="0.0.0.0"/>
+    <param name="listen-port" value="8021"/>
+    <param name="password" value="ClueCon"/>
+    <!-- Allow Docker host bridge IPs (172.x.x.x) - safe because port is localhost-only and password-protected -->
+    <param name="apply-inbound-acl" value="any_v4.auto"/>
+    <!--<param name="stop-on-bind-error" value="true"/>-->
+  </settings>
+</configuration>

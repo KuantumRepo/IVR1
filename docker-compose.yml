@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./data/caddy_data:/data
+      - ./data/caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+
+  freeswitch:
+    image: safarov/freeswitch:latest
+    ports:
+      - "8021:8021"
+      - "5060:5060/udp"
+      - "5080:5080/udp"
+      - "16384-16400:16384-16400/udp"
+    cap_add:
+      - SYS_NICE
+      - NET_ADMIN
+      - NET_RAW
+    ulimits:
+      rtprio: 99
+      memlock: -1
+    volumes:
+      - ./freeswitch/conf:/etc/freeswitch
+      - ./freeswitch/scripts:/usr/share/freeswitch/scripts
+      - ./data/audio:/audio
+    healthcheck:
+      test: ["CMD", "fs_cli", "-x", "status"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: broadcaster
+      POSTGRES_USER: broadcaster
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-broadcaster_secret}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql+asyncpg://broadcaster:${DB_PASSWORD:-broadcaster_secret}@postgres/broadcaster
+      REDIS_URL: redis://redis:6379
+      FS_ESL_HOST: freeswitch
+      FS_ESL_PORT: 8021
+      FS_ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+    volumes:
+      - ./data/audio:/audio
+      - ./data/csv:/csv
+      - ./freeswitch/conf:/etc/freeswitch:rw
+    depends_on:
+      postgres:
+        condition: service_started
+      redis:
+        condition: service_started
+      freeswitch:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: 
+      context: ./frontend
+      dockerfile: Dockerfile
+    environment:
+      INTERNAL_API_URL: http://backend:8000/api/v1
+    depends_on:
+      - backend
+    restart: unless-stopped

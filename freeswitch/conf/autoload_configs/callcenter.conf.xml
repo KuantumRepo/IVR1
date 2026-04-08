@@ -1,0 +1,29 @@
+<configuration name="callcenter.conf" description="CallCenter">
+  <settings>
+    <!-- default settings -->
+  </settings>
+
+  <queues>
+    <queue name="internal_sales_queue">
+      <param name="strategy" value="longest-idle-agent"/>
+      <param name="moh-sound" value="$${hold_music}"/>
+      <param name="time-base-score" value="system"/>
+      <param name="max-wait-time" value="0"/>
+      <param name="max-wait-time-with-no-agent" value="0"/>
+      <param name="max-wait-time-with-no-agent-time-reached" value="5"/>
+      <param name="tier-rules-apply" value="false"/>
+      <param name="tier-rule-wait-second" value="300"/>
+      <param name="tier-rule-wait-multiply-level" value="true"/>
+      <param name="tier-rule-no-agent-no-wait" value="false"/>
+      <param name="discard-abandoned-after" value="60"/>
+      <param name="abandoned-resume-allowed" value="false"/>
+    </queue>
+  </queues>
+
+  <!-- We add agents dynamically via API (callcenter_config agent add) -->
+  <agents>
+  </agents>
+  
+  <tiers>
+  </tiers>
+</configuration>

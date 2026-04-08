@@ -1,0 +1,18 @@
+fastapi
+uvicorn[standard]
+sqlalchemy[asyncio]
+asyncpg
+redis
+python-multipart
+pydantic
+pydantic-settings
+websockets
+alembic
+pandas
+greenswitch
+
+# TTS (clean setup)
+kokoro
+onnxruntime
+soundfile
+numpy

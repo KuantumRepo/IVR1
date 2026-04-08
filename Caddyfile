@@ -1,0 +1,26 @@
+{
+    # Admin API for Caddy (optional, useful for debugging)
+    # admin off
+}
+
+# The block without a specific domain acts as a catch-all or localhost
+# In production, replace `localhost` with your actual domain (e.g., app.domain.com)
+:80, :443 {
+    # Reverse proxy WebSocket and API requests to the Python backend
+    handle_path /api/* {
+        rewrite * /api{path}
+        reverse_proxy backend:8000
+    }
+
+    handle /ws/* {
+        reverse_proxy backend:8000
+    }
+
+    # Reverse proxy everything else to the Next.js frontend
+    handle {
+        reverse_proxy frontend:3000
+    }
+
+    # Enable automatic HTTPS (Caddy will generate a self-signed cert for localhost)
+    tls internal
+}

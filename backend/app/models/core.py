@@ -57,6 +57,13 @@ class IvrActionType(str, enum.Enum):
     TRANSFER = 'TRANSFER'
     HANGUP = 'HANGUP'
     GO_TO_NODE = 'GO_TO_NODE'
+    DNC = 'DNC'
+
+class IvrNodeType(str, enum.Enum):
+    PROMPT = 'PROMPT'
+    HANGUP = 'HANGUP'
+    TRANSFER = 'TRANSFER'
+    DNC = 'DNC'
 
 # M2M Tables
 campaign_contact_lists = Table(
@@ -189,12 +196,13 @@ class IvrNode(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     script_id = Column(UUID(as_uuid=True), ForeignKey('call_scripts.id', ondelete="CASCADE"), nullable=False, index=True)
+    node_type = Column(Enum(IvrNodeType), default=IvrNodeType.PROMPT, nullable=False)
     name = Column(String(255))
     is_start_node = Column(Boolean, default=False)
     
     prompt_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id'))
     tts_text = Column(Text)
-    tts_voice = Column(String(100), default='en-US-Standard-A')
+    tts_voice = Column(String(100), default='af_heart')
     
     script = relationship("CallScript", back_populates="nodes")
     routes = relationship("IvrRoute", foreign_keys="[IvrRoute.node_id]", back_populates="node", cascade="all, delete-orphan")

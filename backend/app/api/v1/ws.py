@@ -45,3 +45,23 @@ async def agent_websocket(websocket: WebSocket, agent_id: str):
         print(f"WS error {agent_id}: {e}")
     finally:
         await pubsub.unsubscribe(channel)
+
+@router.websocket("/ws/test-logs")
+async def test_logs_websocket(websocket: WebSocket):
+    await websocket.accept()
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe("test_logs")
+    
+    try:
+        while True:
+            message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+            if message:
+                await websocket.send_json({"event": message["data"]})
+            else:
+                await asyncio.sleep(0.1)
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        print(f"WS error test_logs: {e}")
+    finally:
+        await pubsub.unsubscribe("test_logs")

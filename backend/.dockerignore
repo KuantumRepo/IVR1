@@ -1,0 +1,16 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+data/
+*.log
+*.txt
+!requirements.txt
+.env
+.pytest_cache/
+e2e_test.py
+smoke_test.py
+test_*.py
+fs_logs.txt
+.git/

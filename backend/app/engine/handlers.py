@@ -28,6 +28,18 @@ logger = logging.getLogger(__name__)
 # Grab the Consumer instance so we can decorate handlers on it
 _consumer = esl_manager.consumer
 
+async def log_test_trace(event: dict, tag: str, detail: str):
+    if event.get("variable_is_test_call") == "true":
+        try:
+            payload = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "tag": tag,
+                "detail": detail
+            }
+            await publish_event("test_logs", json.dumps(payload))
+        except Exception as e:
+            logger.error(f"Failed to push test log: {e}")
+
 
 # ─── CHANNEL_ANSWER ───────────────────────────────────────────────────────────
 
@@ -39,6 +51,8 @@ async def on_channel_answer(event):
 
     uuid = event.get("Unique-ID")
     logger.info(f"Target Answered: {uuid} | Campaign: {campaign_id}")
+    
+    await log_test_trace(event, "NETWORK", "Call Answered. Evaluative Handlers engaged.")
 
     async with AsyncSessionLocal() as db:
         try:
@@ -48,9 +62,12 @@ async def on_channel_answer(event):
                 await db.commit()
                 if camp.enable_amd:
                     logger.info(f"Triggering AMD on {uuid}")
-                    await esl_manager.api(f"uuid_setvar {uuid} execute_on_answer 'lua amd.lua'")
+                    await log_test_trace(event, "AMD", "Triggering Answering Machine Detection script...")
+                    await esl_manager.execute(uuid, "lua", "amd.lua")
                 else:
-                    await _start_human_playlist(uuid, camp)
+                    await log_test_trace(event, "IVR", "AMD bypassed. Commencing start node playback.")
+                    is_test = event.get("variable_is_test_call") == "true"
+                    await _start_human_playlist(uuid, camp, is_test=is_test)
         except Exception as e:
             logger.error(f"on_channel_answer error: {e}", exc_info=True)
 
@@ -88,6 +105,7 @@ async def on_custom_event(event):
         return
 
     logger.info(f"AMD Result on {uuid}: {amd_result}")
+    await log_test_trace(event, "AMD", f"Result Evaluated: {amd_result}")
 
     async with AsyncSessionLocal() as db:
         try:
@@ -102,14 +120,19 @@ async def on_custom_event(event):
                     audio_row = await db.get(AudioFile, camp.vm_drop_audio_id)
                     if audio_row and audio_row.file_path:
                         logger.info(f"Playing voicemail drop for {uuid} ({audio_row.file_path})")
-                        await esl_manager.bgapi(f"uuid_transfer {uuid} inline 'playback:{audio_row.file_path},hangup:NORMAL_CLEARING'")
+                        await log_test_trace(event, "AMD", "Deploying Voicemail Drop audio...")
+                        fs_path = f"/audio/{os.path.basename(audio_row.file_path)}"
+                        await esl_manager.bgapi(f"uuid_transfer {uuid} inline 'playback:{fs_path},hangup:NORMAL_CLEARING'")
                     else:
                         logger.info(f"Voicemail audio file not found for {uuid} — hanging up")
+                        await log_test_trace(event, "AMD", "No valid Voicemail audio bound. Terminating call.")
                         await esl_manager.api(f"uuid_kill {uuid}")
                 else:
                     logger.info(f"No voicemail drop configured for {uuid} — hanging up")
+                    await log_test_trace(event, "AMD", "Voicemail routing blocked. Terminating call.")
                     await esl_manager.api(f"uuid_kill {uuid}")
             else:
+                await log_test_trace(event, "IVR", "Human confirmed. Initiating script.")
                 await _start_human_playlist(uuid, camp)
         except Exception as e:
             logger.error(f"on_custom_event error: {e}", exc_info=True)
@@ -166,6 +189,8 @@ async def on_hangup(event):
 
     cause = event.get("variable_hangup_cause", "UNKNOWN")
     logger.info(f"Hangup queue_id={queue_id} cause={cause}")
+    
+    await log_test_trace(event, "NETWORK", f"Call Disconnected. Cause: {cause}")
     
     # Release capacity to the system instantaneously
     if campaign_id:
@@ -233,7 +258,7 @@ async def on_hangup(event):
 
 # ─── IVR ENGINE ───────────────────────────────────────────────────────────────
 
-async def _play_ivr_node(uuid: str, node_id: UUID, session) -> None:
+async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = False) -> None:
     """
     Resolves the prompt (TTS or audio file) for a node, then fires
     FreeSWITCH play_and_get_digits with a regex derived from the node's routes.
@@ -267,7 +292,6 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session) -> None:
             prompt_path = audio_row.file_path
 
     elif node.tts_text:
-        # FIX #1: synthesize via Kokoro, cache by node_id
         try:
             voice = node.tts_voice or "af_heart"
             prompt_path = await synthesize_node_prompt(
@@ -287,16 +311,24 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session) -> None:
     valid_keys = [str(r.key_pressed) for r in node.routes if r.key_pressed]
     regex = "^[" + "".join(valid_keys) + "]$" if valid_keys else "^$"
 
-    # play_and_get_digits: min=1 max=1 tries=3 timeout=5000ms terminator=#
-    cmd = (
-        f"uuid_execute {uuid} play_and_get_digits "
-        f"'1 1 3 5000 # {prompt_path} silence_stream://250 digit_rx {regex}'"
-    )
+    import os
+    fs_prompt_path = f"/audio/{os.path.basename(prompt_path)}"
+
+    # play_and_get_digits args: min max tries timeout terminators file invalid_file var_name regexp
+    app_arg = f"1 1 3 5000 # {fs_prompt_path} silence_stream://250 digit_rx {regex}"
+    
     logger.info(f"IVR play_and_get_digits on {uuid} | node={node.name!r} | regex={regex}")
-    await esl_manager.bgapi(cmd)
+    logger.info(f"ESL sendmsg => execute play_and_get_digits {app_arg}")
+    
+    if is_test:
+        payload = {"timestamp": datetime.now(timezone.utc).isoformat(), "tag": "IVR", "detail": f"Prompting Node: {node.name} (Awaiting Input...)"}
+        await publish_event("test_logs", json.dumps(payload))
+        
+    result = await esl_manager.execute(uuid, "play_and_get_digits", app_arg)
+    logger.info(f"ESL sendmsg response => {result}")
 
 
-async def _start_human_playlist(uuid: str, campaign: Campaign) -> None:
+async def _start_human_playlist(uuid: str, campaign: Campaign, is_test: bool = False) -> None:
     """Entrypoint when a human answers — finds the start node and begins the IVR tree."""
     logger.info(f"Starting IVR tree for {uuid} (Campaign {campaign.id})")
     async with AsyncSessionLocal() as session:
@@ -311,7 +343,7 @@ async def _start_human_playlist(uuid: str, campaign: Campaign) -> None:
             await esl_manager.bgapi(f"uuid_kill {uuid} NORMAL_CLEARING")
             return
 
-        await _play_ivr_node(uuid, start_node.id, session)
+        await _play_ivr_node(uuid, start_node.id, session, is_test=is_test)
 
 
 # ─── CHANNEL_EXECUTE_COMPLETE ─────────────────────────────────────────────────
@@ -340,12 +372,16 @@ async def on_execute_complete(event):
         return
 
     logger.info(f"IVR digit '{digit}' on {uuid} (node {node_id})")
+    await log_test_trace(event, "IVR", f"User processed digit '{digit}'")
 
     async with AsyncSessionLocal() as session:
         # Load node with routes + their response audio
         result = await session.execute(
             select(IvrNode)
-            .options(selectinload(IvrNode.routes).selectinload(IvrRoute.response_audio))
+            .options(
+                selectinload(IvrNode.routes).selectinload(IvrRoute.response_audio),
+                selectinload(IvrNode.routes).selectinload(IvrRoute.target_node),
+            )
             .where(IvrNode.id == node_id)
         )
         node = result.scalar_one_or_none()
@@ -360,18 +396,40 @@ async def on_execute_complete(event):
             await esl_manager.bgapi(f"uuid_kill {uuid} NORMAL_CLEARING")
             return
 
-        # Optional response audio to play before the action
-        prefix = ""
-        if matched_route.response_audio and matched_route.response_audio.file_path:
-            prefix = f"playback:{matched_route.response_audio.file_path},"
+        target_node = matched_route.target_node
+        if not target_node:
+            logger.warning(f"Digit '{digit}' matched but target node is missing for {uuid}")
+            await esl_manager.bgapi(f"uuid_kill {uuid} NORMAL_CLEARING")
+            return
 
-        action = matched_route.action_type
+        # Optional response audio defined directly on the Terminal Node itself
+        prefix = ""
+        if target_node.node_type in ["TRANSFER", "HANGUP", "DNC"]:
+            if target_node.prompt_audio_id:
+                audio_row = await session.execute(select(AudioFile).where(AudioFile.id == target_node.prompt_audio_id))
+                audio_row = audio_row.scalar_one_or_none()
+                if audio_row and audio_row.file_path:
+                    import os
+                    fs_path = f"/audio/{os.path.basename(audio_row.file_path)}"
+                    prefix = f"playback:{fs_path},"
+            elif target_node.tts_text:
+                try:
+                    voice = target_node.tts_voice or "af_heart"
+                    prompt_path = await synthesize_node_prompt(str(target_node.id), target_node.tts_text, voice)
+                    if prompt_path:
+                        import os
+                        fs_path = f"/audio/{os.path.basename(prompt_path)}"
+                        prefix = f"playback:{fs_path},"
+                except Exception as e:
+                    logger.error(f"TTS synthesis failed for terminal node {target_node.id}: {e}")
+
+        action = target_node.node_type
 
         # ── TRANSFER ──────────────────────────────────────────────────────
-        if action == IvrActionType.TRANSFER:
+        if action == "TRANSFER": # or IvrNodeType.TRANSFER
             logger.info(f"Bridging {uuid} to mod_callcenter internal_sales_queue")
+            await log_test_trace(event, "ROUTING", "Action TRANSFER triggered. Bridging to agent pool.")
             
-            # Fire an event so the Dashboard knows the transfer happened
             if campaign_id:
                 try:
                     camp = await session.get(Campaign, UUID(campaign_id))
@@ -381,32 +439,45 @@ async def on_execute_complete(event):
                 except Exception as e:
                     logger.error(f"Transfer counter increment failed: {e}")
 
-            # Send straight to FreeSWITCH mod_callcenter natively
             bridge = "callcenter:internal_sales_queue"
             cmd = f"uuid_transfer {uuid} inline '{prefix}{bridge}'"
             await esl_manager.bgapi(cmd)
 
         # ── HANGUP ────────────────────────────────────────────────────────
-        elif action == IvrActionType.HANGUP:
-            logger.info(f"HANGUP route triggered for {uuid}")
+        elif action == "HANGUP":
+            logger.info(f"HANGUP node triggered for {uuid}")
+            await log_test_trace(event, "ACTION", "Script specified direct HANGUP. Terminating.")
             ext = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "hangup:NORMAL_CLEARING"
             await esl_manager.bgapi(f"uuid_transfer {uuid} inline {ext}")
 
-        # ── GO_TO_NODE ────────────────────────────────────────────────────
-        elif action == IvrActionType.GO_TO_NODE:
-            if not matched_route.target_node_id:
-                logger.warning(f"GO_TO_NODE route has no target_node_id on {uuid}")
-                await esl_manager.bgapi(f"uuid_kill {uuid} NORMAL_CLEARING")
-                return
+        # ── DNC ───────────────────────────────────────────────────────────
+        elif action == "DNC":
+            logger.info(f"DNC node triggered for {uuid}. Marking contact {contact_id} as DNC.")
+            if contact_id:
+                try:
+                    contact = await session.get(Contact, UUID(contact_id))
+                    if contact:
+                        extra = dict(contact.extra) if contact.extra else {}
+                        extra['dnc'] = True
+                        contact.extra = extra
+                        await session.commit()
+                except Exception as e:
+                    logger.error(f"Failed to update contact DNC status: {e}", exc_info=True)
+            
+            ext = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "hangup:NORMAL_CLEARING"
+            await esl_manager.bgapi(f"uuid_transfer {uuid} inline {ext}")
 
+        # ── PROMPT ────────────────────────────────────────────────────
+        elif action == "PROMPT":
             logger.info(f"Routing {uuid} → Node {matched_route.target_node_id}")
+            await log_test_trace(event, "ROUTING", f"Navigating to Linked Node ID: {matched_route.target_node_id}")
             if prefix:
-                # Play the transition audio synchronously first, then move to node
-                await esl_manager.api(
-                    f"uuid_execute {uuid} playback "
-                    f"{matched_route.response_audio.file_path}"
-                )
-            await _play_ivr_node(uuid, matched_route.target_node_id, session)
+                import os
+                fs_action_path = f"/audio/{os.path.basename(matched_route.response_audio.file_path)}"
+                await esl_manager.execute(uuid, "playback", fs_action_path)
+            
+            is_test = event.get("variable_is_test_call") == "true"
+            await _play_ivr_node(uuid, matched_route.target_node_id, session, is_test=is_test)
 
 
 # ─── EventHandler wrapper ─────────────────────────────────────────────────────

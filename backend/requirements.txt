@@ -9,10 +9,7 @@ pydantic-settings
 websockets
 alembic
 pandas
-greenswitch
-
-# TTS (clean setup)
-kokoro
-onnxruntime
+genesis
+# TTS (lightweight ONNX-only, no PyTorch needed)
+kokoro-onnx
 soundfile
-numpy

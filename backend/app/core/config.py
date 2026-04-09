@@ -10,8 +10,6 @@ class Settings(BaseSettings):
     FS_ESL_PORT: int = 8021
     FS_ESL_PASSWORD: str = "ClueCon"
     
-    KOKORO_TTS_URL: str = "http://kokoro-tts:8880"
-    
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8', extra="ignore")
 
 settings = Settings()

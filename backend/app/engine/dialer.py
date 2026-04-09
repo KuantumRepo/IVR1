@@ -107,7 +107,7 @@ class CampaignDialer:
         prefix = "sofia/external/"
         if campaign.sip_gateways:
             gw = campaign.sip_gateways[0]
-            prefix = f"sofia/gateway/{gw.name}/" if gw.host else "sofia/external/"
+            prefix = f"sofia/gateway/{gw.id}/" if gw.id else "sofia/external/"
             
         dial_string = f"{prefix}{item.phone_number}"
         
@@ -125,6 +125,7 @@ class CampaignDialer:
             f"contact_phone={item.phone_number},"
             f"ignore_early_media=true,"
             f"absolute_codec_string=PCMU,"
+            f"disable_video=true,"
             f"origination_caller_id_number={caller_id_number}}}"
         )
         

@@ -68,7 +68,9 @@ class ESLManager:
         try:
             async with Inbound(self.host, self.port, self.password) as client:
                 response = await client.send(cmd)
-                return str(response)
+                if hasattr(response, "body") and response.body:
+                    return str(response.body).strip()
+                return str(response).strip()
         except Exception as e:
             logger.error(f"ESL Inbound command failed [{cmd}]: {e}")
             return None
@@ -81,19 +83,35 @@ class ESLManager:
         """Shorthand for foreground API calls."""
         return await self.send_command(f"api {cmd}")
 
+    async def execute(self, uuid: str, app: str, arg: str = "") -> str | None:
+        """
+        Execute an application on a channel using ESL sendmsg protocol.
+        This is the industry-standard way to run apps on FreeSWITCH channels.
+        Unlike bgapi uuid_execute, sendmsg returns errors synchronously.
+        """
+        cmd = f"sendmsg {uuid}\ncall-command: execute\nexecute-app-name: {app}"
+        if arg:
+            cmd += f"\nexecute-app-arg: {arg}"
+        return await self.send_command(cmd)
+
     async def reload_xml(self):
         await self.api("reloadxml")
 
     async def push_gateway_xml(self, xml_content: str, filename: str):
-        filepath = f"/etc/freeswitch/sip_profiles/external/{filename}"
+        import os
+        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        workspace_dir = os.path.dirname(backend_dir)
+        filepath = os.path.join(workspace_dir, "freeswitch", "conf", "sip_profiles", "external", filename)
+        
         try:
+            os.makedirs(os.path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as f:
                 f.write(xml_content)
             await self.reload_xml()
             await self.bgapi("sofia profile external rescan")
             return True
         except Exception as e:
-            logger.error(f"Failed to push gateway XML: {e}")
+            logger.error(f"Failed to push gateway XML to {filepath}: {e}")
             return False
 
 

@@ -60,6 +60,7 @@ freeswitch/db/
 # =========================
 *.pid
 *.log
+docker-compose.override.yml
 
 # =========================
 # System / IDE

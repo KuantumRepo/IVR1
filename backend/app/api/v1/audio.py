@@ -9,6 +9,11 @@ from uuid import UUID
 from app.core.database import get_db
 from app.models.core import AudioFile
 from app.schemas.audio_file import AudioFileResponse
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+import asyncio
+from app.engine.tts import synthesize_node_prompt
+import hashlib
 
 router = APIRouter(prefix="/audio", tags=["Audio Files"])
 
@@ -77,3 +82,39 @@ async def delete_audio(audio_id: UUID, db: AsyncSession = Depends(get_db)):
     await db.delete(audio)
     await db.commit()
     return {"status": "deleted"}
+
+@router.get("/{audio_id}/stream", response_class=FileResponse)
+async def stream_audio(audio_id: UUID, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(AudioFile).where(AudioFile.id == audio_id))
+    audio = result.scalar_one_or_none()
+    if not audio:
+        raise HTTPException(status_code=404, detail="Audio file not found")
+        
+    if not os.path.exists(audio.file_path):
+        raise HTTPException(status_code=404, detail="File missing on disk")
+        
+    return FileResponse(audio.file_path, media_type=audio.mime_type or "audio/wav")
+
+class TTSPreviewRequest(BaseModel):
+    text: str
+    voice: str = "af_heart"
+
+@router.post("/tts/preview", response_class=FileResponse)
+async def preview_tts(req: TTSPreviewRequest):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+        
+    # Generate a deterministic pseudo-ID based on content so we cache identical preview plays
+    hash_id = hashlib.md5(f"{req.text}:{req.voice}".encode()).hexdigest()
+    node_id_like = f"preview_{hash_id}"
+    
+    try:
+        wav_path = await synthesize_node_prompt(node_id=node_id_like, text=req.text, voice=req.voice)
+        if not os.path.exists(wav_path):
+            raise HTTPException(status_code=500, detail="Synthesized file not found")
+        return FileResponse(wav_path, media_type="audio/wav")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+

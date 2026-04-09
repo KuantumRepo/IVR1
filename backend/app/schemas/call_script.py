@@ -2,11 +2,10 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
-from app.models.core import CampaignType, IvrActionType
+from app.models.core import CampaignType, IvrNodeType 
 
 class IvrRouteBase(BaseModel):
     key_pressed: str
-    action_type: IvrActionType
     target_node_id: Optional[UUID] = None
     response_audio_id: Optional[UUID] = None
 
@@ -20,10 +19,11 @@ class IvrRouteResponse(IvrRouteBase):
 
 class IvrNodeBase(BaseModel):
     name: Optional[str] = None
+    node_type: IvrNodeType = IvrNodeType.PROMPT
     is_start_node: bool = False
     prompt_audio_id: Optional[UUID] = None
     tts_text: Optional[str] = None
-    tts_voice: str = "en-US-Standard-A"
+    tts_voice: Optional[str] = "af_heart"
 
 class IvrNodeCreate(IvrNodeBase):
     id: Optional[UUID] = None
@@ -50,3 +50,12 @@ class CallScriptResponse(CallScriptBase):
     nodes: List[IvrNodeResponse] = []
     
     model_config = ConfigDict(from_attributes=True)
+
+class TestCallRequest(BaseModel):
+    phone_number: str
+    script_id: UUID
+    gateway_id: Optional[UUID] = None
+    caller_id_id: Optional[UUID] = None
+    agent_id: Optional[UUID] = None
+    enable_amd: bool = True
+    hangup_on_voicemail: bool = True

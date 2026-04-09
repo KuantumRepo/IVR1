@@ -1,88 +1,74 @@
 """
-tts.py — Kokoro TTS synthesis module.
+tts.py — Kokoro TTS synthesis module (ONNX-optimized).
 
 Architecture:
-- One global KPipeline per lang_code, lazily initialized and cached.
+- Single global Kokoro instance (ONNX runtime, no PyTorch).
 - synthesize_node() generates WAV at 24kHz and caches to disk by node_id.
 - If the file already exists it is reused (idempotent — safe for repeated calls).
 - Audio dir defaults to /audio (Docker volume) or ./data/audio locally.
 - All synthesis runs in a thread pool so it never blocks the asyncio event loop.
+- Model files (kokoro-v1.0-int8.onnx + voices-v1.0.bin) are downloaded at
+  Docker build time and baked into the image layer.
 """
 
 import asyncio
 import logging
 import os
-import hashlib
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 import soundfile as sf
-from kokoro import KPipeline
 
 logger = logging.getLogger(__name__)
 
 # ── Audio storage path ───────────────────────────────────────────────────────
+# In Docker: /audio (shared volume).
+# Locally: resolve to <project_root>/data/audio so TTS files land in the same
+#   directory that FreeSWITCH's Docker volume maps (./data/audio:/audio).
+#   __file__ = backend/app/engine/tts.py → .parent x3 = backend/ → .parent = project root
 
-AUDIO_DIR = Path("/audio") if os.path.exists("/.dockerenv") else Path("./data/audio")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+AUDIO_DIR = Path("/audio") if os.path.exists("/.dockerenv") else (_PROJECT_ROOT / "data" / "audio")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
-TTS_SAMPLE_RATE = 24_000  # Kokoro outputs 24 kHz
+# ── Model paths (baked into Docker image at /app/) ────────────────────────────
 
-# ── Pipeline cache (one per lang_code) ────────────────────────────────────────
+from pathlib import Path
 
-_pipelines: dict[str, KPipeline] = {}
+# Base model paths dynamically resolved (works in Docker /app and local Windows)
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+MODEL_PATH = os.environ.get("KOKORO_MODEL_PATH", str(BASE_DIR / "kokoro-v1.0.onnx"))
+VOICES_PATH = os.environ.get("KOKORO_VOICES_PATH", str(BASE_DIR / "voices-v1.0.bin"))
 
+# ── Lazy singleton ────────────────────────────────────────────────────────────
 
-def _get_pipeline(lang_code: str) -> KPipeline:
-    """Return a cached KPipeline for the given language code, creating it if needed."""
-    if lang_code not in _pipelines:
-        logger.info(f"Loading Kokoro pipeline for lang_code='{lang_code}'")
-        _pipelines[lang_code] = KPipeline(lang_code=lang_code)
-        logger.info(f"Kokoro pipeline for '{lang_code}' ready")
-    return _pipelines[lang_code]
+_kokoro_instance = None
 
 
-# ── Voice → lang_code mapping ─────────────────────────────────────────────────
-
-# Voice prefix determines the language pipeline to load.
-# a = American English, b = British English, etc.
-_VOICE_PREFIX_TO_LANG = {
-    "af": "a",  # American female
-    "am": "a",  # American male
-    "bf": "b",  # British female
-    "bm": "b",  # British male
-    "jf": "j",  # Japanese female
-    "jm": "j",  # Japanese male
-    "zf": "z",  # Mandarin female
-    "zm": "z",  # Mandarin male
-    "ef": "e",  # Spanish female
-    "em": "e",  # Spanish male
-    "ff": "f",  # French female
-}
-
-def _lang_code_for_voice(voice: str) -> str:
-    prefix = voice[:2]
-    return _VOICE_PREFIX_TO_LANG.get(prefix, "a")  # Default to American English
+def _get_kokoro():
+    """Return the cached Kokoro ONNX instance, creating it on first call."""
+    global _kokoro_instance
+    if _kokoro_instance is None:
+        from kokoro_onnx import Kokoro
+        logger.info(f"Loading Kokoro ONNX model from {MODEL_PATH}")
+        _kokoro_instance = Kokoro(MODEL_PATH, VOICES_PATH)
+        logger.info("Kokoro ONNX model ready")
+    return _kokoro_instance
 
 
 # ── Core synthesis ────────────────────────────────────────────────────────────
 
 def _synthesize_blocking(text: str, voice: str, output_path: Path) -> None:
     """Blocking synthesis — runs in a thread executor, NOT the event loop."""
-    lang_code = _lang_code_for_voice(voice)
-    pipeline = _get_pipeline(lang_code)
+    kokoro = _get_kokoro()
 
-    chunks = []
-    for _, _, audio in pipeline(text, voice=voice, speed=1.0):
-        chunks.append(audio)
+    samples, sample_rate = kokoro.create(text, voice=voice, speed=1.0)
 
-    if not chunks:
+    if samples is None or len(samples) == 0:
         raise RuntimeError(f"Kokoro returned no audio for voice={voice!r}, text={text[:60]!r}")
 
-    combined = np.concatenate(chunks)
-    sf.write(str(output_path), combined, TTS_SAMPLE_RATE)
-    logger.info(f"TTS synthesized {len(combined)/TTS_SAMPLE_RATE:.1f}s → {output_path}")
+    sf.write(str(output_path), samples, sample_rate)
+    logger.info(f"TTS synthesized {len(samples)/sample_rate:.1f}s → {output_path}")
 
 
 async def synthesize_node_prompt(

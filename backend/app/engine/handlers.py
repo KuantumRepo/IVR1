@@ -122,7 +122,7 @@ async def on_custom_event(event):
                         logger.info(f"Playing voicemail drop for {uuid} ({audio_row.file_path})")
                         await log_test_trace(event, "AMD", "Deploying Voicemail Drop audio...")
                         fs_path = f"/audio/{os.path.basename(audio_row.file_path)}"
-                        await esl_manager.bgapi(f"uuid_transfer {uuid} inline 'playback:{fs_path},hangup:NORMAL_CLEARING'")
+                        await esl_manager.bgapi(f"uuid_transfer {uuid} 'playback:{fs_path},hangup:NORMAL_CLEARING' inline")
                     else:
                         logger.info(f"Voicemail audio file not found for {uuid} — hanging up")
                         await log_test_trace(event, "AMD", "No valid Voicemail audio bound. Terminating call.")
@@ -440,15 +440,16 @@ async def on_execute_complete(event):
                     logger.error(f"Transfer counter increment failed: {e}")
 
             bridge = "callcenter:internal_sales_queue"
-            cmd = f"uuid_transfer {uuid} inline '{prefix}{bridge}'"
+            dest = f"{prefix}{bridge}"
+            cmd = f"uuid_transfer {uuid} '{dest}' inline"
             await esl_manager.bgapi(cmd)
 
         # ── HANGUP ────────────────────────────────────────────────────────
         elif action == "HANGUP":
             logger.info(f"HANGUP node triggered for {uuid}")
             await log_test_trace(event, "ACTION", "Script specified direct HANGUP. Terminating.")
-            ext = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "hangup:NORMAL_CLEARING"
-            await esl_manager.bgapi(f"uuid_transfer {uuid} inline {ext}")
+            dest = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "'hangup:NORMAL_CLEARING'"
+            await esl_manager.bgapi(f"uuid_transfer {uuid} {dest} inline")
 
         # ── DNC ───────────────────────────────────────────────────────────
         elif action == "DNC":
@@ -464,8 +465,8 @@ async def on_execute_complete(event):
                 except Exception as e:
                     logger.error(f"Failed to update contact DNC status: {e}", exc_info=True)
             
-            ext = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "hangup:NORMAL_CLEARING"
-            await esl_manager.bgapi(f"uuid_transfer {uuid} inline {ext}")
+            dest = f"'{prefix}hangup:NORMAL_CLEARING'" if prefix else "'hangup:NORMAL_CLEARING'"
+            await esl_manager.bgapi(f"uuid_transfer {uuid} {dest} inline")
 
         # ── PROMPT ────────────────────────────────────────────────────
         elif action == "PROMPT":

@@ -8,8 +8,8 @@
       <param name="strategy" value="longest-idle-agent"/>
       <param name="moh-sound" value="$${hold_music}"/>
       <param name="time-base-score" value="system"/>
-      <param name="max-wait-time" value="0"/>
-      <param name="max-wait-time-with-no-agent" value="0"/>
+      <param name="max-wait-time" value="120"/>
+      <param name="max-wait-time-with-no-agent" value="30"/>
       <param name="max-wait-time-with-no-agent-time-reached" value="5"/>
       <param name="tier-rules-apply" value="false"/>
       <param name="tier-rule-wait-second" value="300"/>

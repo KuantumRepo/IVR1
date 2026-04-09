@@ -1,18 +1,19 @@
 <include>
   <user id="1001">
     <params>
-      <param name="password" value="$${default_password}"/>
+      <param name="password" value="uLPUJdYVAYtENk6ry14L_g"/>
       <param name="vm-password" value="1001"/>
     </params>
     <variables>
       <variable name="toll_allow" value="domestic,international,local"/>
       <variable name="accountcode" value="1001"/>
       <variable name="user_context" value="default"/>
-      <variable name="effective_caller_id_name" value="Extension 1001"/>
+      <variable name="effective_caller_id_name" value="John Cena"/>
       <variable name="effective_caller_id_number" value="1001"/>
       <variable name="outbound_caller_id_name" value="$${outbound_caller_name}"/>
       <variable name="outbound_caller_id_number" value="$${outbound_caller_id}"/>
-      <variable name="callgroup" value="techsupport"/>
+      <variable name="callgroup" value="agents"/>
+      <variable name="agent_id" value="766b2b48-c4d2-41a5-8e6e-9dac1991c6de"/>
     </variables>
   </user>
 </include>

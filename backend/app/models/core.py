@@ -137,7 +137,14 @@ class Agent(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     name = Column(String(255), nullable=False)
+    
+    # SIP registration — agent connects their softphone with these
+    sip_extension = Column(String(50), unique=True, nullable=True)
+    sip_password = Column(String(255), nullable=True)
+    
+    # Legacy / derived field (kept for backward compat in handlers)
     phone_or_sip = Column(String(500), nullable=False)
+    
     concurrent_cap = Column(Integer, default=1, nullable=False)
     status = Column(Enum(AgentStatus), default=AgentStatus.OFFLINE)
     current_calls = Column(Integer, default=0)

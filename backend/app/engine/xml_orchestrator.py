@@ -49,9 +49,9 @@ async def generate_gateway_xml(gateway: SipGateway):
         logger.info(f"Generated SIP Gateway XML: {file_path}")
         
         # Trigger reload in FS
-        if esl_manager.is_connected:
-            await esl_manager.bgapi("sofia profile external rescan")
-            logger.info("Triggered sofia profile external rescan")
+        await esl_manager.api("reloadxml")
+        await esl_manager.bgapi("sofia profile external rescan")
+        logger.info("Triggered sofia profile external rescan")
             
     except Exception as e:
         logger.error(f"Failed to generate gateway XML: {e}")
@@ -63,36 +63,41 @@ async def delete_gateway_xml(gateway_id: str):
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Deleted SIP Gateway XML: {file_path}")
-            
-            if esl_manager.is_connected:
-                await esl_manager.bgapi("sofia profile external rescan")
-                # Wait maybe? Or sofia profile external killgw gw_name? 
+            await esl_manager.api("reloadxml")
+            await esl_manager.bgapi("sofia profile external rescan")
                 
     except Exception as e:
         logger.error(f"Failed to delete gateway XML: {e}")
 
 async def generate_agent_xml(agent: Agent):
+    """
+    Generate a FreeSWITCH directory entry for an agent so their
+    SIP softphone can register to our FreeSWITCH instance.
+    
+    Uses the agent's sip_extension and sip_password from the database.
+    """
     try:
         _ensure_dir()
-        # Extension is phone_or_sip (e.g., '1001')
-        ext = agent.phone_or_sip
+        ext = agent.sip_extension or agent.phone_or_sip
+        password = agent.sip_password or "changeme123"
         file_path = DIRECTORY_DIR / f"{ext}.xml"
         
         xml_content = f"""<include>
   <user id="{ext}">
     <params>
-      <param name="password" value="test1234"/>
-      <param name="vm-password" value="1234"/>
+      <param name="password" value="{password}"/>
+      <param name="vm-password" value="{ext}"/>
     </params>
     <variables>
       <variable name="toll_allow" value="domestic,international,local"/>
       <variable name="accountcode" value="{ext}"/>
       <variable name="user_context" value="default"/>
-      <variable name="effective_caller_id_name" value="Agent {ext}"/>
+      <variable name="effective_caller_id_name" value="{agent.name}"/>
       <variable name="effective_caller_id_number" value="{ext}"/>
       <variable name="outbound_caller_id_name" value="$${{outbound_caller_name}}"/>
       <variable name="outbound_caller_id_number" value="$${{outbound_caller_id}}"/>
-      <variable name="callgroup" value="techsupport"/>
+      <variable name="callgroup" value="agents"/>
+      <variable name="agent_id" value="{agent.id}"/>
     </variables>
   </user>
 </include>
@@ -102,31 +107,29 @@ async def generate_agent_xml(agent: Agent):
             
         logger.info(f"Generated Agent XML: {file_path}")
         
-        if esl_manager.is_connected:
-            await esl_manager.bgapi("reloadxml")
-            
-            # Dynamically provision agent into callcenter module
-            await esl_manager.bgapi(f"callcenter_config agent add {ext} Callback")
-            # For local registration, contact is user/ext
-            await esl_manager.bgapi(f"callcenter_config agent set contact {ext} user/{ext}")
-            await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
-            await esl_manager.bgapi(f"callcenter_config agent set state {ext} Waiting")
-            await esl_manager.bgapi(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
-            logger.info(f"Provisioned Agent {ext} into mod_callcenter")
+        # Reload FS config
+        await esl_manager.api("reloadxml")
+        
+        # Provision agent into mod_callcenter
+        await esl_manager.bgapi(f"callcenter_config agent add {ext} Callback")
+        await esl_manager.bgapi(f"callcenter_config agent set contact {ext} user/{ext}")
+        await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
+        await esl_manager.bgapi(f"callcenter_config agent set state {ext} Waiting")
+        await esl_manager.bgapi(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
+        logger.info(f"Provisioned Agent {ext} into mod_callcenter")
             
     except Exception as e:
         logger.error(f"Failed to generate agent XML: {e}")
 
 async def delete_agent_xml(agent: Agent):
     try:
-        ext = agent.phone_or_sip
+        ext = agent.sip_extension or agent.phone_or_sip
         file_path = DIRECTORY_DIR / f"{ext}.xml"
         if file_path.exists():
             file_path.unlink()
             logger.info(f"Deleted Agent XML: {file_path}")
-            if esl_manager.is_connected:
-                await esl_manager.bgapi("reloadxml")
-                # Remove from callcenter logic
-                await esl_manager.bgapi(f"callcenter_config agent del {ext}")
+            await esl_manager.api("reloadxml")
+            # Remove from callcenter
+            await esl_manager.bgapi(f"callcenter_config agent del {ext}")
     except Exception as e:
         logger.error(f"Failed to delete agent XML: {e}")

@@ -22,6 +22,9 @@ services:
     environment:
       - EXT_RTP_IP=${EXT_RTP_IP:-stun:stun.freeswitch.org}
       - EXT_SIP_IP=${EXT_SIP_IP:-stun:stun.freeswitch.org}
+      # Enable native FreeSWITCH sound packs (hold music, IVR prompts, ring tones)
+      - SOUND_RATES=8000:16000
+      - SOUND_TYPES=music:en-us-callie
     ports:
       - "8021:8021"
       - "5060:5060/udp"
@@ -75,6 +78,10 @@ services:
       FS_ESL_HOST: freeswitch
       FS_ESL_PORT: 8021
       FS_ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+      # Public-facing SIP domain for agent softphone registration
+      # Set FS_SIP_DOMAIN to your server's public IP or domain
+      FS_SIP_DOMAIN: ${FS_SIP_DOMAIN:-127.0.0.1}
+      FS_SIP_PORT: ${FS_SIP_PORT:-5060}
     volumes:
       - ./data/audio:/audio
       - ./data/csv:/csv

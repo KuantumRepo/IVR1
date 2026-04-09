@@ -1,39 +1,141 @@
-Start Backend
-cmd /c "cd backend && venv\Scripts\python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+# Broadcaster — Voice Broadcasting & IVR Platform
 
-Start Frontend
-pnpm dev    
+High-volume voice broadcasting system with node-based IVR scripting, SIP agent management, and FreeSWITCH-powered call handling.
 
-# 🚨 PRODUCTION DEPLOYMENT WARNING 🚨
-**FreeSWITCH Docker & STUN Networking**
+## Core Modules (All Working ✅)
 
-Currently, `freeswitch/conf/vars.xml` uses the `stun-set` directive to dynamically resolve the external RTP and SIP IPs via `stun.freeswitch.org`. **This is perfectly fine for the local dev environment** (or environments where the container has unrestricted internet access and NAT pinholing works automatically).
+| Module | Description |
+|--------|-------------|
+| **SIP Gateways** | Configure outbound SIP trunks for originating calls |
+| **Caller IDs** | Manage outbound caller identity per campaign |
+| **Agents** | Auto-provisioned SIP extensions with live registration diagnostics |
+| **IVR Flow Builder** | Visual drag-and-drop node editor (PROMPT → TRANSFER / HANGUP / DNC) |
+| **Audio Store** | Upload WAV files or generate TTS via Kokoro |
+| **Test Simulator** | Live test calls with real-time trace logging |
 
-**HOWEVER, FOR CLOUD/PRODUCTION DEPLOYMENTS:**
-Multiple Docker FreeSWITCH projects explicitly warn that STUN **does not work reliably** inside Docker because of how Docker Bridge networks handle NAT topologies. In production (AWS, DigitalOcean, etc.), STUN may return the wrong IP, resulting in one-way audio or dropped calls.
+## Quick Start (Development)
 
-**The Proper Production Solution:**
-Before deploying to production, you MUST revisit the `stun-set` approach. The reliable, industry-standard solution is to use a **custom Docker entrypoint script** (`entrypoint.sh`) that reads your server's actual static public IP from an `.env` variable (or fetches it via a cloud metadata API), and natively injects or specifically `sed` replaces that real IP directly into the `vars.xml` config *before* the FreeSWITCH process starts.
+### Prerequisites
+- Docker Desktop (FreeSWITCH, PostgreSQL, Redis)
+- Python 3.12+ with venv
+- Node.js 20+ with pnpm
+
+### 1. Start Infrastructure
+```bash
+docker compose up -d
+```
+This starts FreeSWITCH, PostgreSQL, and Redis. First boot downloads ~90MB of sound packs.
+
+### 2. Start Backend
+```bash
+cd backend
+python -m venv venv
+venv\Scripts\activate        # Windows
+pip install -r requirements.txt
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### 3. Start Frontend
+```bash
+cd frontend
+pnpm install
+pnpm dev
+```
+
+App runs at http://localhost:3000
 
 ---
 
-# 🌐 Production Networking Topology (SIP vs HTTP)
-
-When deploying via `docker-compose.yml`, please note that **Caddy ONLY proxies HTTP/HTTPS traffic**. Real-Time Communications (SIP/RTP) are UDP-based and bypass Caddy entirely, mapping directly from the host to the FreeSWITCH container.
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│ Host Server (e.g. 203.0.113.50)                         │
-│                                                         │
-│   HTTPS (:443) ──►  [ Caddy ] ──► [ Frontend ]          │
-│                               ──► [ Backend  ]          │
-│                                                         │
-│   UDP (:5060)  ──►  [ FreeSWITCH ]                      │
-│   UDP (:16384+)──►                                      │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│  Docker Compose                                          │
+│                                                          │
+│  ┌─────────────┐  ┌──────────┐  ┌───────┐              │
+│  │ FreeSWITCH  │  │ Postgres │  │ Redis │              │
+│  │ :5060 (SIP) │  │ :5432    │  │ :6379 │              │
+│  │ :8021 (ESL) │  └──────────┘  └───────┘              │
+│  └──────┬──────┘                                        │
+│         │ ESL (sendmsg + events)                        │
+└─────────┼────────────────────────────────────────────────┘
+          │
+   ┌──────┴──────┐         ┌──────────────┐
+   │   FastAPI   │◄────────│   Next.js    │
+   │   Backend   │  API    │   Frontend   │
+   │   :8000     │         │   :3000      │
+   └─────────────┘         └──────────────┘
 ```
 
-Because of this split routing, you have two separate connection domains in `.env`:
+### Call Flow
+```
+Dialer → SIP Gateway → Prospect Phone
+                              │ (answers)
+                              ▼
+                    FreeSWITCH (AMD check)
+                              │
+                              ▼
+                    IVR Playback (TTS audio)
+                              │ (DTMF press)
+                              ▼
+                    Route: TRANSFER / HANGUP / DNC
+                              │
+                              ▼ (if TRANSFER)
+                    mod_callcenter queue
+                              │
+                              ▼
+                    Agent Softphone (rings)
+```
 
-1. `FS_ESL_HOST`: The internal host used by the Backend to send commands to FreeSWITCH. In Docker, this is `freeswitch`. In local dev without Docker, it's `127.0.0.1`.
-2. `FS_SIP_DOMAIN`: The **public-facing** host that Agent Softphones use to register. Since agents are OUTSIDE the docker network, they cannot reach `freeswitch`. In production, this **MUST** be set to your public IP or A-record domain. Agent credentials presented in the UI rely on this variable.
+---
+
+## Environment Configuration
+
+Copy `.env.example` to `.env` and configure:
+
+```bash
+cp .env.example .env
+```
+
+### Key Variables
+
+| Variable | Dev Value | Prod Value | Purpose |
+|----------|-----------|------------|---------|
+| `FS_ESL_HOST` | `127.0.0.1` | `freeswitch` | Backend → FS management (internal) |
+| `FS_SIP_DOMAIN` | `127.0.0.1` | Public IP / domain | Agent softphone registration (external) |
+| `DATABASE_URL` | `...@127.0.0.1:5432/...` | `...@postgres/...` | PostgreSQL connection |
+| `REDIS_URL` | `redis://127.0.0.1:6379` | `redis://redis:6379` | Redis connection |
+
+---
+
+## 🌐 Production Networking (SIP vs HTTP)
+
+**Caddy ONLY proxies HTTP/HTTPS.** SIP and RTP are UDP-based and go directly to FreeSWITCH:
+
+```
+Internet
+   │
+   ├── HTTPS (:443)       ──► Caddy ──► Frontend / Backend
+   │
+   ├── SIP/UDP (:5060)    ──► FreeSWITCH (agent registration + call signaling)
+   │
+   └── RTP/UDP (:16384+)  ──► FreeSWITCH (voice media)
+```
+
+`FS_SIP_DOMAIN` **must** be set to your server's public IP or domain in production. Agent softphones connect directly to FreeSWITCH — they cannot resolve Docker-internal hostnames like `freeswitch`.
+
+## 🚨 Production Deployment Notes
+
+**FreeSWITCH STUN:** Currently uses `stun:stun.freeswitch.org` to discover the public IP. This works locally but is **unreliable in Docker on cloud servers**. For production, hardcode your public IP via `EXT_SIP_IP` and `EXT_RTP_IP` in the `.env`, or use a Docker entrypoint script that injects the IP before FreeSWITCH starts.
+
+## Full-Stack Deployment
+
+```bash
+# Set production values
+export FS_SIP_DOMAIN=203.0.113.50  # Your server's public IP
+export EXT_SIP_IP=203.0.113.50
+export EXT_RTP_IP=203.0.113.50
+
+# Deploy everything
+docker compose --profile full-stack up -d
+```

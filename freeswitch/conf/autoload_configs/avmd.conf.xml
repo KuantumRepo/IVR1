@@ -63,7 +63,10 @@
             <param name="detection_mode" value="2"/>
 
             <!-- number of detection threads running per each avmd session -->
-            <param name="detectors_n" value="36"/>
+            <!-- Reduced from 18 to 6: at 500 concurrent calls, 18 × 500 = 9000
+                 threads which is a CPU bomb. 6 × 500 = 3000 is manageable.
+                 6 detectors is still sufficient for reliable 1kHz beep detection. -->
+            <param name="detectors_n" value="6"/>
 
             <!-- number of lagged detection threads running per each avmd session -->
             <param name="detectors_lagged_n" value="1"/>

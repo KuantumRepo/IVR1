@@ -22,6 +22,7 @@ from app.models.core import (
 from app.esl.connection import esl_manager
 from app.core.redis import publish_event, redis_client
 from app.engine.tts import synthesize_node_prompt
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -61,9 +62,14 @@ async def on_channel_answer(event):
                 camp.answered_count += 1
                 await db.commit()
                 if camp.enable_amd:
-                    logger.info(f"Triggering AMD on {uuid}")
-                    await log_test_trace(event, "AMD", "Triggering Answering Machine Detection script...")
-                    await esl_manager.execute(uuid, "lua", "amd.lua")
+                    logger.info(f"Triggering 3-layer AMD orchestrator on {uuid}")
+                    await log_test_trace(event, "AMD", "Triggering 3-layer AMD orchestration (mod_amd + avmd + whisper)...")
+                    # The Lua orchestrator handles all 3 layers internally:
+                    #   Layer 1: mod_amd (heuristic)
+                    #   Layer 2: Whisper sidecar (AI, only if ambiguous)
+                    #   Layer 3: mod_avmd (beep detection, parallel)
+                    # Results arrive via amd::result CUSTOM event
+                    await esl_manager.execute(uuid, "lua", "amd_orchestrator.lua")
                 else:
                     await log_test_trace(event, "IVR", "AMD bypassed. Commencing start node playback.")
                     is_test = event.get("variable_is_test_call") == "true"
@@ -72,7 +78,7 @@ async def on_channel_answer(event):
             logger.error(f"on_channel_answer error: {e}", exc_info=True)
 
 
-# ─── AMD (CUSTOM) ─────────────────────────────────────────────────────────────
+# ─── CUSTOM EVENTS (AMD + Agent Registration) ────────────────────────────────
 
 @_consumer.handle("CUSTOM")
 async def on_custom_event(event):
@@ -93,19 +99,59 @@ async def on_custom_event(event):
             await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
         return
 
-    # -- AMD Processing --
-    if subclass != "amd::info":
+    # -- AMD Result (from amd_orchestrator.lua) --
+    if subclass == "amd::result":
+        await _handle_amd_result(event)
         return
 
+    # -- Whisper Request (from amd_orchestrator.lua, Layer 2 fallback) --
+    if subclass == "amd::whisper_request":
+        await _handle_whisper_request(event)
+        return
+
+    # -- AVMD Beep Detection (from mod_avmd, Layer 3) --
+    if subclass == "avmd::beep":
+        await _handle_avmd_beep(event)
+        return
+
+
+async def _handle_amd_result(event):
+    """
+    Process the AMD classification result from amd_orchestrator.lua.
+    
+    TELEMETRY ONLY — Lua handles all call control (hangup/continue) inline.
+    
+    By the time this event fires:
+      - HUMAN results: Lua kept call alive → we start IVR playback here
+      - MACHINE + Mode A/C: Lua already executed session:hangup() → call is dead
+      - MACHINE + Mode B: Lua kept avmd running → we wait for avmd::beep
+      - UNKNOWN + Mode A/B: Lua already executed session:hangup() → call is dead
+      - UNKNOWN + Mode C: Lua overrode result to "human" → we start IVR
+    
+    We NEVER call uuid_kill here. All hangups are synchronous in Lua.
+    """
     uuid = event.get("Unique-ID")
     amd_result = event.get("variable_amd_result")
+    amd_layer = event.get("variable_amd_layer", "unknown")
+    amd_confidence = event.get("variable_amd_confidence", "0.0")
+    amd_decision_ms = event.get("variable_amd_decision_ms", "0")
     campaign_id = event.get("variable_campaign_id")
+    campaign_mode = event.get("variable_campaign_mode", "A")
 
     if not campaign_id:
+        logger.warning(f"amd::result event missing campaign_id natively. Event keys: {list(event.keys())}")
         return
 
-    logger.info(f"AMD Result on {uuid}: {amd_result}")
-    await log_test_trace(event, "AMD", f"Result Evaluated: {amd_result}")
+    logger.info(
+        f"AMD Result on {uuid}: {amd_result} "
+        f"(layer={amd_layer}, conf={amd_confidence}, "
+        f"elapsed={amd_decision_ms}ms, mode={campaign_mode})"
+    )
+    await log_test_trace(
+        event, "AMD",
+        f"3-Layer Result: {amd_result} via {amd_layer} "
+        f"(confidence={amd_confidence}, {amd_decision_ms}ms)"
+    )
 
     async with AsyncSessionLocal() as db:
         try:
@@ -113,29 +159,200 @@ async def on_custom_event(event):
             if not camp:
                 return
 
-            if amd_result == "MACHINE":
-                logger.info(f"AMD detected MACHINE on {uuid}")
-                if camp.enable_vm_drop and camp.vm_drop_audio_id:
-                    # Look up the actual audio file path to play
-                    audio_row = await db.get(AudioFile, camp.vm_drop_audio_id)
-                    if audio_row and audio_row.file_path:
-                        logger.info(f"Playing voicemail drop for {uuid} ({audio_row.file_path})")
-                        await log_test_trace(event, "AMD", "Deploying Voicemail Drop audio...")
-                        fs_path = f"/audio/{os.path.basename(audio_row.file_path)}"
-                        await esl_manager.bgapi(f"uuid_transfer {uuid} 'playback:{fs_path},hangup:NORMAL_CLEARING' inline")
-                    else:
-                        logger.info(f"Voicemail audio file not found for {uuid} — hanging up")
-                        await log_test_trace(event, "AMD", "No valid Voicemail audio bound. Terminating call.")
-                        await esl_manager.api(f"uuid_kill {uuid}")
+            if amd_result == "human":
+                # All modes: start IVR for human
+                await log_test_trace(event, "IVR", "Human confirmed. Initiating IVR script.")
+                is_test = event.get("variable_is_test_call") == "true"
+                await _start_human_playlist(uuid, camp, is_test=is_test)
+
+            elif amd_result == "machine":
+                camp.voicemail_count += 1
+                await db.commit()
+                
+                if campaign_mode == "B":
+                    # Mode B: Lua keeps avmd running — beep handler will play VM drop
+                    logger.info(f"AMD MACHINE on {uuid} + Mode B — waiting for avmd::beep")
+                    await log_test_trace(event, "AMD", "Machine detected (Mode B). Waiting for beep to drop voicemail.")
                 else:
-                    logger.info(f"No voicemail drop configured for {uuid} — hanging up")
-                    await log_test_trace(event, "AMD", "Voicemail routing blocked. Terminating call.")
-                    await esl_manager.api(f"uuid_kill {uuid}")
-            else:
-                await log_test_trace(event, "IVR", "Human confirmed. Initiating script.")
-                await _start_human_playlist(uuid, camp)
+                    # Mode A/C: Lua already hung up the call via session:hangup()
+                    logger.info(f"AMD MACHINE on {uuid} + Mode {campaign_mode} — Lua already hung up")
+                    await log_test_trace(event, "AMD", f"Machine detected (Mode {campaign_mode}). Call terminated by Lua.")
+
+            elif amd_result == "unknown":
+                # Mode C treats unknown as human (done in Lua, result overridden to 'human')
+                # This branch only fires for Mode A/B where Lua already hung up
+                logger.info(f"AMD UNKNOWN on {uuid} + Mode {campaign_mode} — Lua already hung up")
+                await log_test_trace(event, "AMD", f"AMD timeout/unknown (Mode {campaign_mode}). Call terminated by Lua.")
+
         except Exception as e:
-            logger.error(f"on_custom_event error: {e}", exc_info=True)
+            logger.error(f"_handle_amd_result error: {e}", exc_info=True)
+
+
+async def _handle_whisper_request(event):
+    """
+    Handle Layer 2 Whisper AMD request from amd_orchestrator.lua.
+    
+    The Lua script recorded a short audio file to the shared /audio volume
+    and fired this event requesting the Python backend to stream it to the
+    Whisper sidecar and write the result back as channel variables.
+    
+    Path translation:
+      FS container sees: /audio/amd_{uuid}.wav
+      Backend (local dev) sees: ./data/audio/amd_{uuid}.wav
+      Backend (Docker prod) sees: /audio/amd_{uuid}.wav
+    We use settings.AUDIO_DIR to construct the correct local path.
+    """
+    uuid = event.get("Unique-ID")
+    whisper_file = event.get("variable_amd_whisper_file")
+    campaign_id = event.get("variable_campaign_id")
+
+    if not uuid or not whisper_file:
+        return
+
+    # Translate FS container path → backend-local path
+    # FS always writes to /audio/<filename>, we replace the /audio prefix
+    # with the configured AUDIO_DIR (./data/audio in dev, /audio in Docker)
+    import os
+    filename = os.path.basename(whisper_file)
+    local_path = os.path.join(settings.AUDIO_DIR, filename)
+
+    logger.info(f"Whisper AMD request for {uuid}: FS path={whisper_file}, local path={local_path}")
+
+    try:
+        import websockets
+        import soundfile as sf
+        import numpy as np
+
+        # Read the recorded audio file from the shared volume
+        audio_data, sample_rate = sf.read(local_path, dtype='int16')
+        
+        # Resample to 16kHz mono if needed (numpy-only, no scipy required)
+        if sample_rate != 16000:
+            # Linear interpolation resampling — sufficient for speech AMD
+            num_samples = int(len(audio_data) * 16000 / sample_rate)
+            indices = np.linspace(0, len(audio_data) - 1, num_samples)
+            audio_data = np.interp(indices, np.arange(len(audio_data)), audio_data.astype(np.float64)).astype(np.int16)
+        
+        # Ensure mono
+        if len(audio_data.shape) > 1:
+            audio_data = audio_data[:, 0]
+
+        # Connect to Whisper sidecar WebSocket
+        ws_url = settings.WHISPER_AMD_WS_URL
+        async with websockets.connect(ws_url, open_timeout=5) as ws:
+            # Send audio in chunks (640 bytes = 20ms at 16kHz PCM16)
+            chunk_size = 640
+            audio_bytes = audio_data.tobytes()
+            
+            for i in range(0, len(audio_bytes), chunk_size):
+                chunk = audio_bytes[i:i + chunk_size]
+                await ws.send(chunk)
+            
+            # Request final decision
+            await ws.send(json.dumps({"type": "flush"}))
+            
+            # Wait for final response
+            response_text = await asyncio.wait_for(ws.recv(), timeout=10.0)
+            result = json.loads(response_text)
+            
+            # If we got an early decision first, read again for final
+            if result.get("type") == "early":
+                try:
+                    response_text = await asyncio.wait_for(ws.recv(), timeout=10.0)
+                    result = json.loads(response_text)
+                except Exception:
+                    pass  # Use early decision if final doesn't arrive
+            
+            # Write results back to the channel as variables
+            label = result.get("label", "unknown")
+            confidence = str(result.get("confidence", 0.0))
+            transcript = result.get("transcript", "")
+            
+            await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_result {label}")
+            await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_confidence {confidence}")
+            # Transcript may contain spaces — replace for channel var safety
+            if transcript:
+                safe_transcript = transcript[:200].replace(" ", "_")
+                await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_transcript {safe_transcript}")
+            
+            logger.info(
+                f"Whisper result for {uuid}: {label} "
+                f"(conf={confidence}, transcript='{transcript[:60]}')"
+            )
+
+    except FileNotFoundError:
+        logger.error(f"Whisper audio file not found: {local_path}")
+        await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_result unknown")
+        await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_confidence 0.0")
+    except Exception as e:
+        logger.error(f"Whisper AMD processing failed for {uuid}: {e}", exc_info=True)
+        # Set fallback so Lua doesn't wait forever
+        await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_result unknown")
+        await esl_manager.api(f"uuid_setvar {uuid} amd_whisper_confidence 0.0")
+    finally:
+        # Clean up the temporary recording file
+        try:
+            if os.path.exists(local_path):
+                os.remove(local_path)
+                logger.debug(f"Cleaned up AMD recording: {local_path}")
+        except OSError as e:
+            logger.warning(f"Failed to clean up AMD recording {local_path}: {e}")
+
+
+async def _handle_avmd_beep(event):
+    """
+    Handle beep detection from mod_avmd (Layer 3).
+    
+    This only fires when mod_avmd detects a 1000Hz beep tone.
+    Action depends on campaign_mode:
+      - Mode B + MACHINE: Play VM drop audio, then hangup
+      - All other cases: Ignore (avmd should have been stopped by Lua)
+    """
+    uuid = event.get("Unique-ID")
+    campaign_id = event.get("variable_campaign_id")
+    campaign_mode = event.get("variable_campaign_mode", "A")
+    vm_drop_audio_id = event.get("variable_vm_drop_audio_id")
+    amd_result = event.get("variable_amd_result", "")
+
+    if not uuid or not campaign_id:
+        return
+
+    logger.info(f"AVMD beep detected on {uuid} (mode={campaign_mode}, amd_result={amd_result})")
+
+    # Only act on Mode B + machine detection
+    if campaign_mode != "B" or amd_result != "machine":
+        logger.info(f"Beep on {uuid} ignored — mode={campaign_mode}, result={amd_result}")
+        # Stop avmd to free CPU
+        await esl_manager.execute(uuid, "avmd", "stop")
+        return
+
+    # Mode B: Play VM drop audio then hangup
+    async with AsyncSessionLocal() as db:
+        try:
+            if vm_drop_audio_id:
+                audio_row = await db.get(AudioFile, UUID(vm_drop_audio_id))
+                if audio_row and audio_row.file_path:
+                    import os
+                    fs_path = f"/audio/{os.path.basename(audio_row.file_path)}"
+                    logger.info(f"Playing VM drop for {uuid}: {fs_path}")
+                    await log_test_trace(
+                        event, "AMD",
+                        f"Beep detected! Playing voicemail drop: {audio_row.name}"
+                    )
+                    # Stop avmd first (save CPU), then play + hangup
+                    await esl_manager.execute(uuid, "avmd", "stop")
+                    await esl_manager.bgapi(
+                        f"uuid_transfer {uuid} 'playback:{fs_path},hangup:NORMAL_CLEARING' inline"
+                    )
+                    return
+
+            # No VM drop audio configured — just hangup
+            logger.info(f"No VM drop audio for {uuid} — hanging up")
+            await esl_manager.execute(uuid, "avmd", "stop")
+            await esl_manager.api(f"uuid_kill {uuid}")
+
+        except Exception as e:
+            logger.error(f"_handle_avmd_beep error: {e}", exc_info=True)
 
 
 # ─── CHANNEL_BRIDGE (MOD_CALLCENTER SCREEN POP) ───────────────────────────────
@@ -224,10 +441,21 @@ async def on_hangup(event):
                     await db.delete(q_item)
                     await db.commit()
                     
-            # Insert Call Details Record
+            # Insert Call Details Record with AMD telemetry
             duration = int(event.get("variable_billsec", 0))
             amd_result = event.get("variable_amd_result", "UNKNOWN")
             contact_id = event.get("variable_contact_id")
+            
+            # AMD telemetry from amd_orchestrator.lua channel variables
+            amd_layer = event.get("variable_amd_layer")
+            amd_decision_ms_raw = event.get("variable_amd_decision_ms")
+            amd_decision_ms = int(amd_decision_ms_raw) if amd_decision_ms_raw else None
+            amd_confidence_raw = event.get("variable_amd_confidence")
+            amd_confidence = float(amd_confidence_raw) if amd_confidence_raw else None
+            amd_transcript = event.get("variable_amd_transcript")
+            # Restore spaces from underscore encoding (Lua channel var safety)
+            if amd_transcript:
+                amd_transcript = amd_transcript.replace("_", " ")
             
             call_log = CallLog(
                 campaign_id=UUID(campaign_id) if campaign_id else None,
@@ -235,7 +463,11 @@ async def on_hangup(event):
                 phone_number=phone_number,
                 duration=duration,
                 hangup_cause=cause,
-                amd_result=amd_result
+                amd_result=amd_result,
+                amd_layer=amd_layer,
+                amd_decision_ms=amd_decision_ms,
+                amd_confidence=amd_confidence,
+                amd_transcript=amd_transcript,
             )
             db.add(call_log)
             await db.commit()

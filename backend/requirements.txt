@@ -13,3 +13,4 @@ genesis
 # TTS (lightweight ONNX-only, no PyTorch needed)
 kokoro-onnx
 soundfile
+numpy

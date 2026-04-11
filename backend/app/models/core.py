@@ -49,6 +49,16 @@ class GatewayAuthType(str, enum.Enum):
     PASSWORD = 'PASSWORD'
     IP_BASED = 'IP_BASED'
 
+class CampaignMode(str, enum.Enum):
+    """AMD campaign behavior mode.
+    A = MACHINE → hangup immediately (aggressive, saves SIP minutes)
+    B = MACHINE → wait for beep → play VM drop audio → hangup (VM drop mode)
+    C = UNKNOWN → assume human, continue IVR (conservative/agent-safe)
+    """
+    A = 'A'
+    B = 'B'
+    C = 'C'
+
 class ScriptStepType(str, enum.Enum):
     AUDIO_FILE = 'AUDIO_FILE'
     TTS = 'TTS'
@@ -250,6 +260,14 @@ class Campaign(Base):
     enable_vm_drop = Column(Boolean, default=False)
     use_legacy_dtmf = Column(Boolean, default=False)
 
+    # AMD campaign mode: A (hangup on machine), B (VM drop), C (conservative/assume human)
+    campaign_mode = Column(Enum(CampaignMode), default=CampaignMode.A, nullable=False)
+    # Audio file to play as a voicemail drop when Mode B detects beep
+    vm_drop_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id'), nullable=True)
+    # Per-campaign AMD tuning overrides (JSONB). When null, system defaults apply.
+    # Example: {"initial_silence": 4000, "total_analysis_time": 6000, "short_speech_threshold_sec": 1.5}
+    amd_config = Column(JSONB, nullable=True, default=None)
+
     total_contacts = Column(Integer, default=0)
     dialed_count = Column(Integer, default=0)
     answered_count = Column(Integer, default=0)
@@ -268,6 +286,7 @@ class Campaign(Base):
     caller_ids = relationship("CallerId", secondary=campaign_caller_ids)
     agents = relationship("Agent", secondary=campaign_agents)
     script = relationship("CallScript")
+    vm_drop_audio = relationship("AudioFile", foreign_keys=[vm_drop_audio_id])
 
 class DialQueue(Base):
     __tablename__ = 'dial_queue'
@@ -297,5 +316,11 @@ class CallLog(Base):
     duration = Column(Integer, default=0) # Total call duration in seconds
     hangup_cause = Column(String(255))
     amd_result = Column(String(50))
+
+    # AMD telemetry — populated from channel variables set by amd_orchestrator.lua
+    amd_layer = Column(String(20))         # 'mod_amd', 'whisper', or 'timeout'
+    amd_decision_ms = Column(Integer)      # Milliseconds from answer to AMD decision
+    amd_confidence = Column(DECIMAL(4,3))  # 0.000 – 1.000 confidence score
+    amd_transcript = Column(Text)          # Whisper transcript (only if Layer 2 was used)
     
     timestamp = Column(DateTime(timezone=True), default=utcnow)

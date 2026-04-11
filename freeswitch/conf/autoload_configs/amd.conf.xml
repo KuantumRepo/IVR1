@@ -1,0 +1,112 @@
+<!--
+  ═══════════════════════════════════════════════════════════════════════════════
+  mod_amd Configuration — Answering Machine Detection (Heuristic Engine)
+  ═══════════════════════════════════════════════════════════════════════════════
+
+  This module is a port of Asterisk's app_amd for FreeSWITCH.
+  It analyzes voice activity patterns (word count, silence gaps, greeting length)
+  to classify whether the answering party is a human or a machine (voicemail/IVR).
+
+  RESULTS are set as channel variables:
+    amd_result  = "HUMAN" | "MACHINE" | "NOTSURE"
+    amd_cause   = reason string (e.g., "INITIALSILENCE", "MAXWORDLENGTH", etc.)
+
+  The module also fires a CUSTOM event (amd::info) with the result.
+
+  IMPORTANT: These are the SYSTEM-WIDE DEFAULTS (fallback baseline).
+  Per-campaign overrides are stored in the database (campaigns.amd_config JSONB)
+  and injected as channel variables at originate time. The Lua orchestrator
+  reads those overrides and adapts its decision logic accordingly.
+
+  NOTE: The amd_orchestrator.lua plays 250ms of silence BEFORE invoking
+  mod_amd to prime the audio codec. This prevents false INITIALSILENCE
+  triggers from SIP signaling delay. The initial_silence value below
+  is applied AFTER the priming completes.
+  ═══════════════════════════════════════════════════════════════════════════════
+-->
+<configuration name="amd.conf" description="mod_amd Configuration">
+
+  <settings>
+    <!--
+      silence_threshold (default: 256)
+      Energy level (0–32768) below which audio is considered silence.
+      256 is the industry standard for clean digital SIP/VoIP trunks.
+      Raise to 400+ for analog PSTN or noisy mobile carrier trunks.
+    -->
+    <param name="silence_threshold" value="256"/>
+
+    <!--
+      initial_silence (default: 2500ms, production: 3500ms)
+      Maximum ms of silence BEFORE any speech is detected.
+      If the callee's line is silent for this long, result = MACHINE.
+
+      3500ms accounts for:
+        - SIP signaling setup delay (~1-2s, absorbed by 250ms silent priming)
+        - Human reaction time after pickup (~1-2s to say "Hello?")
+        - International trunk variability (some carriers add extra delay)
+
+      This is the #1 parameter to tune per-carrier. If a specific trunk
+      consistently triggers false MACHINE, increase this in the campaign's
+      amd_config override.
+    -->
+    <param name="initial_silence" value="3500"/>
+
+    <!--
+      greeting (default: 1500ms)
+      Maximum duration of continuous speech that qualifies as "human."
+      If the initial speech block exceeds this, result = MACHINE.
+      Human greetings ("Hello?", "Yeah?") are typically under 1.5 seconds.
+      VM greetings ("Hi, you've reached...") are typically 3-8 seconds.
+    -->
+    <param name="greeting" value="1500"/>
+
+    <!--
+      after_greeting_silence (default: 800ms)
+      How long to wait in silence AFTER the greeting ends before classifying.
+      If silence persists this long after speech stopped, result = HUMAN.
+      Humans pause after "Hello?" waiting for a response.
+      800ms is the industry standard sweet spot.
+    -->
+    <param name="after_greeting_silence" value="800"/>
+
+    <!--
+      total_analysis_time (default: 5000ms)
+      Hard timeout for the entire detection process.
+      If no definitive classification is reached, result = NOTSURE.
+      5000ms is the industry ceiling — anything longer wastes SIP billing.
+      Ambiguous results are routed to the Whisper AI sidecar (Layer 2).
+    -->
+    <param name="total_analysis_time" value="5000"/>
+
+    <!--
+      min_word_length (default: 100ms)
+      Minimum duration of a sound burst to count as a "word."
+      Sounds shorter than this are considered noise/clicks.
+    -->
+    <param name="min_word_length" value="100"/>
+
+    <!--
+      between_words_silence (default: 50ms)
+      Maximum silence gap between sounds that are still considered
+      part of the same "word." Gaps longer than this start a new word.
+    -->
+    <param name="between_words_silence" value="50"/>
+
+    <!--
+      maximum_number_of_words (default: 3)
+      If the speaker says MORE than this many distinct words, result = MACHINE.
+      Humans answer with 1-2 words ("Hello?", "Yeah?").
+      VM greetings are full sentences with 5+ words.
+      3 is the industry standard — catches "Hello, who is this?" as human.
+    -->
+    <param name="maximum_number_of_words" value="3"/>
+
+    <!--
+      maximum_word_length (default: 5000ms)
+      If a single continuous sound block exceeds this duration, result = MACHINE.
+      No human says a single word for 5+ seconds.
+    -->
+    <param name="maximum_word_length" value="5000"/>
+  </settings>
+
+</configuration>

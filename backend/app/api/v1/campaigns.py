@@ -2,11 +2,12 @@ import os
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import func
 from typing import List
 from uuid import UUID
 
 from app.core.database import get_db
-from app.models.core import Campaign, ContactList, SipGateway, CallerId, Agent, DialQueue, Contact
+from app.models.core import Campaign, ContactList, SipGateway, CallerId, Agent, DialQueue, Contact, CallLog
 from app.schemas.campaign import CampaignCreate, CampaignResponse
 
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
@@ -126,4 +127,86 @@ async def get_campaign_metrics(campaign_id: UUID, db: AsyncSession = Depends(get
         "transfers": camp.transferred_count,
         "failed": camp.failed_count,
         "conversion_rate": conversion_rate
+    }
+
+
+@router.get("/{campaign_id}/amd-stats")
+async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
+    """
+    AMD performance analytics for a campaign.
+    
+    Returns classification breakdown, average decision latency,
+    which AMD layer made decisions, and campaign mode distribution.
+    """
+    # Verify campaign exists
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    camp = result.scalar_one_or_none()
+    if not camp:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    
+    # Total calls for this campaign
+    total_result = await db.execute(
+        select(func.count(CallLog.id)).where(CallLog.campaign_id == campaign_id)
+    )
+    total_calls = total_result.scalar() or 0
+    
+    if total_calls == 0:
+        return {
+            "total_calls": 0,
+            "human_pct": 0.0,
+            "machine_pct": 0.0,
+            "unknown_pct": 0.0,
+            "avg_decision_ms": 0,
+            "layer_breakdown": {"mod_amd": 0, "whisper": 0, "timeout": 0},
+            "mode_breakdown": {"A": 0, "B": 0, "C": 0},
+        }
+    
+    # AMD result breakdown
+    human_result = await db.execute(
+        select(func.count(CallLog.id))
+        .where(CallLog.campaign_id == campaign_id)
+        .where(CallLog.amd_result == "human")
+    )
+    human_count = human_result.scalar() or 0
+    
+    machine_result = await db.execute(
+        select(func.count(CallLog.id))
+        .where(CallLog.campaign_id == campaign_id)
+        .where(CallLog.amd_result == "machine")
+    )
+    machine_count = machine_result.scalar() or 0
+    
+    unknown_count = total_calls - human_count - machine_count
+    
+    # Average decision time (only for calls that have AMD telemetry)
+    avg_ms_result = await db.execute(
+        select(func.avg(CallLog.amd_decision_ms))
+        .where(CallLog.campaign_id == campaign_id)
+        .where(CallLog.amd_decision_ms.isnot(None))
+    )
+    avg_decision_ms = int(avg_ms_result.scalar() or 0)
+    
+    # Layer breakdown
+    layer_breakdown = {"mod_amd": 0, "whisper": 0, "timeout": 0}
+    for layer_name in ["mod_amd", "whisper", "timeout"]:
+        layer_result = await db.execute(
+            select(func.count(CallLog.id))
+            .where(CallLog.campaign_id == campaign_id)
+            .where(CallLog.amd_layer == layer_name)
+        )
+        layer_breakdown[layer_name] = layer_result.scalar() or 0
+    
+    # Mode breakdown (from campaign, not per-call — but useful for the response)
+    mode_breakdown = {"A": 0, "B": 0, "C": 0}
+    current_mode = camp.campaign_mode.value if camp.campaign_mode else "A"
+    mode_breakdown[current_mode] = total_calls
+    
+    return {
+        "total_calls": total_calls,
+        "human_pct": round((human_count / total_calls) * 100, 1) if total_calls else 0.0,
+        "machine_pct": round((machine_count / total_calls) * 100, 1) if total_calls else 0.0,
+        "unknown_pct": round((unknown_count / total_calls) * 100, 1) if total_calls else 0.0,
+        "avg_decision_ms": avg_decision_ms,
+        "layer_breakdown": layer_breakdown,
+        "mode_breakdown": mode_breakdown,
     }

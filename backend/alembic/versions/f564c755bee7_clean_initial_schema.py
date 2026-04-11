@@ -1,8 +1,8 @@
-"""initial schema
+"""clean_initial_schema
 
-Revision ID: ce97ec604580
+Revision ID: f564c755bee7
 Revises: 
-Create Date: 2026-04-07 01:48:42.395252
+Create Date: 2026-04-10 19:23:53.770597
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = 'ce97ec604580'
+revision: str = 'f564c755bee7'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -24,13 +24,16 @@ def upgrade() -> None:
     op.create_table('agents',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
+    sa.Column('sip_extension', sa.String(length=50), nullable=True),
+    sa.Column('sip_password', sa.String(length=255), nullable=True),
     sa.Column('phone_or_sip', sa.String(length=500), nullable=False),
     sa.Column('concurrent_cap', sa.Integer(), nullable=False),
     sa.Column('status', sa.Enum('OFFLINE', 'AVAILABLE', 'ON_CALL', 'WRAP_UP', name='agentstatus'), nullable=True),
     sa.Column('current_calls', sa.Integer(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.PrimaryKeyConstraint('id')
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('sip_extension')
     )
     op.create_table('audio_files',
     sa.Column('id', sa.UUID(), nullable=False),
@@ -41,6 +44,15 @@ def upgrade() -> None:
     sa.Column('duration_ms', sa.Integer(), nullable=True),
     sa.Column('mime_type', sa.String(length=100), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_table('call_scripts',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('name', sa.String(length=255), nullable=False),
+    sa.Column('description', sa.Text(), nullable=True),
+    sa.Column('script_type', sa.Enum('VOICE_BROADCAST', 'PRESS_ONE', 'AUTO_DIAL', name='campaigntype'), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('caller_ids',
@@ -76,23 +88,35 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_table('call_scripts',
+    op.create_table('campaigns',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('name', sa.String(length=255), nullable=False),
     sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('script_type', sa.Enum('VOICE_BROADCAST', 'PRESS_ONE', 'AUTO_DIAL', name='campaigntype'), nullable=False),
-    sa.Column('transfer_key', sa.String(length=1), nullable=True),
-    sa.Column('hangup_key', sa.String(length=1), nullable=True),
-    sa.Column('enable_hangup_response', sa.Boolean(), nullable=True),
-    sa.Column('enable_wrong_key_response', sa.Boolean(), nullable=True),
-    sa.Column('transfer_response_audio_id', sa.UUID(), nullable=True),
-    sa.Column('hangup_response_audio_id', sa.UUID(), nullable=True),
-    sa.Column('wrong_key_response_audio_id', sa.UUID(), nullable=True),
+    sa.Column('status', sa.Enum('DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETE', 'ABORTED', name='campaignstatus'), nullable=True),
+    sa.Column('script_id', sa.UUID(), nullable=False),
+    sa.Column('max_concurrent_calls', sa.Integer(), nullable=True),
+    sa.Column('calls_per_second', sa.DECIMAL(precision=5, scale=2), nullable=True),
+    sa.Column('ring_timeout_sec', sa.Integer(), nullable=True),
+    sa.Column('retry_attempts', sa.Integer(), nullable=True),
+    sa.Column('retry_delay_min', sa.Integer(), nullable=True),
+    sa.Column('enable_amd', sa.Boolean(), nullable=True),
+    sa.Column('hangup_on_voicemail', sa.Boolean(), nullable=True),
+    sa.Column('enable_vm_drop', sa.Boolean(), nullable=True),
+    sa.Column('use_legacy_dtmf', sa.Boolean(), nullable=True),
+    sa.Column('campaign_mode', sa.Enum('A', 'B', 'C', name='campaignmode'), nullable=False),
+    sa.Column('vm_drop_audio_id', sa.UUID(), nullable=True),
+    sa.Column('total_contacts', sa.Integer(), nullable=True),
+    sa.Column('dialed_count', sa.Integer(), nullable=True),
+    sa.Column('answered_count', sa.Integer(), nullable=True),
+    sa.Column('transferred_count', sa.Integer(), nullable=True),
+    sa.Column('voicemail_count', sa.Integer(), nullable=True),
+    sa.Column('failed_count', sa.Integer(), nullable=True),
+    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['hangup_response_audio_id'], ['audio_files.id'], ),
-    sa.ForeignKeyConstraint(['transfer_response_audio_id'], ['audio_files.id'], ),
-    sa.ForeignKeyConstraint(['wrong_key_response_audio_id'], ['audio_files.id'], ),
+    sa.ForeignKeyConstraint(['script_id'], ['call_scripts.id'], ),
+    sa.ForeignKeyConstraint(['vm_drop_audio_id'], ['audio_files.id'], ),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_table('contacts',
@@ -111,58 +135,45 @@ def upgrade() -> None:
     sa.Column('misc_data_2', sa.Text(), nullable=True),
     sa.Column('misc_data_3', sa.Text(), nullable=True),
     sa.Column('extra', postgresql.JSONB(astext_type=sa.Text()), nullable=True),
-    sa.Column('is_dnc', sa.Boolean(), nullable=True),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
     sa.ForeignKeyConstraint(['list_id'], ['contact_lists.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
     op.create_index(op.f('ix_contacts_list_id'), 'contacts', ['list_id'], unique=False)
     op.create_index(op.f('ix_contacts_phone_number'), 'contacts', ['phone_number'], unique=False)
-    op.create_table('campaigns',
-    sa.Column('id', sa.UUID(), nullable=False),
-    sa.Column('name', sa.String(length=255), nullable=False),
-    sa.Column('description', sa.Text(), nullable=True),
-    sa.Column('status', sa.Enum('DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETE', 'ABORTED', name='campaignstatus'), nullable=True),
-    sa.Column('script_id', sa.UUID(), nullable=False),
-    sa.Column('max_concurrent_calls', sa.Integer(), nullable=True),
-    sa.Column('calls_per_second', sa.DECIMAL(precision=5, scale=2), nullable=True),
-    sa.Column('ring_timeout_sec', sa.Integer(), nullable=True),
-    sa.Column('retry_attempts', sa.Integer(), nullable=True),
-    sa.Column('retry_delay_min', sa.Integer(), nullable=True),
-    sa.Column('call_window_start', sa.Time(), nullable=True),
-    sa.Column('call_window_end', sa.Time(), nullable=True),
-    sa.Column('timezone', sa.String(length=50), nullable=True),
-    sa.Column('respect_local_tz', sa.Boolean(), nullable=True),
-    sa.Column('enable_amd', sa.Boolean(), nullable=True),
-    sa.Column('hangup_on_voicemail', sa.Boolean(), nullable=True),
-    sa.Column('enable_vm_drop', sa.Boolean(), nullable=True),
-    sa.Column('use_legacy_dtmf', sa.Boolean(), nullable=True),
-    sa.Column('total_contacts', sa.Integer(), nullable=True),
-    sa.Column('dialed_count', sa.Integer(), nullable=True),
-    sa.Column('answered_count', sa.Integer(), nullable=True),
-    sa.Column('transferred_count', sa.Integer(), nullable=True),
-    sa.Column('voicemail_count', sa.Integer(), nullable=True),
-    sa.Column('failed_count', sa.Integer(), nullable=True),
-    sa.Column('started_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=True),
-    sa.ForeignKeyConstraint(['script_id'], ['call_scripts.id'], ),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_table('script_steps',
+    op.create_table('ivr_nodes',
     sa.Column('id', sa.UUID(), nullable=False),
     sa.Column('script_id', sa.UUID(), nullable=False),
-    sa.Column('step_order', sa.Integer(), nullable=False),
-    sa.Column('step_type', sa.Enum('AUDIO_FILE', 'TTS', name='scriptsteptype'), nullable=False),
-    sa.Column('audio_file_id', sa.UUID(), nullable=True),
+    sa.Column('node_type', sa.Enum('PROMPT', 'HANGUP', 'TRANSFER', 'DNC', name='ivrnodetype'), nullable=False),
+    sa.Column('name', sa.String(length=255), nullable=True),
+    sa.Column('is_start_node', sa.Boolean(), nullable=True),
+    sa.Column('prompt_audio_id', sa.UUID(), nullable=True),
     sa.Column('tts_text', sa.Text(), nullable=True),
     sa.Column('tts_voice', sa.String(length=100), nullable=True),
-    sa.Column('playlist_type', sa.String(length=20), nullable=True),
-    sa.ForeignKeyConstraint(['audio_file_id'], ['audio_files.id'], ),
+    sa.ForeignKeyConstraint(['prompt_audio_id'], ['audio_files.id'], ),
     sa.ForeignKeyConstraint(['script_id'], ['call_scripts.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
+    op.create_index(op.f('ix_ivr_nodes_script_id'), 'ivr_nodes', ['script_id'], unique=False)
+    op.create_table('call_logs',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('campaign_id', sa.UUID(), nullable=True),
+    sa.Column('contact_id', sa.UUID(), nullable=True),
+    sa.Column('phone_number', sa.String(length=30), nullable=False),
+    sa.Column('duration', sa.Integer(), nullable=True),
+    sa.Column('hangup_cause', sa.String(length=255), nullable=True),
+    sa.Column('amd_result', sa.String(length=50), nullable=True),
+    sa.Column('amd_layer', sa.String(length=20), nullable=True),
+    sa.Column('amd_decision_ms', sa.Integer(), nullable=True),
+    sa.Column('amd_confidence', sa.DECIMAL(precision=4, scale=3), nullable=True),
+    sa.Column('amd_transcript', sa.Text(), nullable=True),
+    sa.Column('timestamp', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['campaign_id'], ['campaigns.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['contact_id'], ['contacts.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_call_logs_campaign_id'), 'call_logs', ['campaign_id'], unique=False)
+    op.create_index(op.f('ix_call_logs_contact_id'), 'call_logs', ['contact_id'], unique=False)
     op.create_table('campaign_agents',
     sa.Column('campaign_id', sa.UUID(), nullable=False),
     sa.Column('agent_id', sa.UUID(), nullable=False),
@@ -191,25 +202,66 @@ def upgrade() -> None:
     sa.ForeignKeyConstraint(['gateway_id'], ['sip_gateways.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('campaign_id', 'gateway_id')
     )
+    op.create_table('dial_queue',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('campaign_id', sa.UUID(), nullable=False),
+    sa.Column('contact_id', sa.UUID(), nullable=False),
+    sa.Column('phone_number', sa.String(length=30), nullable=False),
+    sa.Column('priority', sa.Integer(), nullable=True),
+    sa.Column('retry_count', sa.Integer(), nullable=True),
+    sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('locked_by', sa.String(length=100), nullable=True),
+    sa.Column('locked_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=True),
+    sa.ForeignKeyConstraint(['campaign_id'], ['campaigns.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['contact_id'], ['contacts.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_dial_queue_campaign_id'), 'dial_queue', ['campaign_id'], unique=False)
+    op.create_index(op.f('ix_dial_queue_locked_by'), 'dial_queue', ['locked_by'], unique=False)
+    op.create_index(op.f('ix_dial_queue_next_attempt_at'), 'dial_queue', ['next_attempt_at'], unique=False)
+    op.create_table('ivr_routes',
+    sa.Column('id', sa.UUID(), nullable=False),
+    sa.Column('node_id', sa.UUID(), nullable=False),
+    sa.Column('key_pressed', sa.String(length=10), nullable=False),
+    sa.Column('action_type', sa.Enum('TRANSFER', 'HANGUP', 'GO_TO_NODE', 'DNC', name='ivractiontype'), nullable=False),
+    sa.Column('target_node_id', sa.UUID(), nullable=True),
+    sa.Column('response_audio_id', sa.UUID(), nullable=True),
+    sa.ForeignKeyConstraint(['node_id'], ['ivr_nodes.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['response_audio_id'], ['audio_files.id'], ),
+    sa.ForeignKeyConstraint(['target_node_id'], ['ivr_nodes.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index(op.f('ix_ivr_routes_node_id'), 'ivr_routes', ['node_id'], unique=False)
     # ### end Alembic commands ###
 
 
 def downgrade() -> None:
     """Downgrade schema."""
     # ### commands auto generated by Alembic - please adjust! ###
+    op.drop_index(op.f('ix_ivr_routes_node_id'), table_name='ivr_routes')
+    op.drop_table('ivr_routes')
+    op.drop_index(op.f('ix_dial_queue_next_attempt_at'), table_name='dial_queue')
+    op.drop_index(op.f('ix_dial_queue_locked_by'), table_name='dial_queue')
+    op.drop_index(op.f('ix_dial_queue_campaign_id'), table_name='dial_queue')
+    op.drop_table('dial_queue')
     op.drop_table('campaign_sip_gateways')
     op.drop_table('campaign_contact_lists')
     op.drop_table('campaign_caller_ids')
     op.drop_table('campaign_agents')
-    op.drop_table('script_steps')
-    op.drop_table('campaigns')
+    op.drop_index(op.f('ix_call_logs_contact_id'), table_name='call_logs')
+    op.drop_index(op.f('ix_call_logs_campaign_id'), table_name='call_logs')
+    op.drop_table('call_logs')
+    op.drop_index(op.f('ix_ivr_nodes_script_id'), table_name='ivr_nodes')
+    op.drop_table('ivr_nodes')
     op.drop_index(op.f('ix_contacts_phone_number'), table_name='contacts')
     op.drop_index(op.f('ix_contacts_list_id'), table_name='contacts')
     op.drop_table('contacts')
-    op.drop_table('call_scripts')
+    op.drop_table('campaigns')
     op.drop_table('sip_gateways')
     op.drop_table('contact_lists')
     op.drop_table('caller_ids')
+    op.drop_table('call_scripts')
     op.drop_table('audio_files')
     op.drop_table('agents')
     # ### end Alembic commands ###

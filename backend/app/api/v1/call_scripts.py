@@ -7,7 +7,7 @@ from typing import List
 from uuid import UUID
 
 from app.core.database import get_db
-from app.models.core import CallScript, IvrNode, IvrRoute, Campaign, SipGateway, Agent, CallerId, CampaignStatus, CampaignType
+from app.models.core import CallScript, IvrNode, IvrRoute, Campaign, SipGateway, Agent, CallerId, AudioFile, CampaignStatus, CampaignType, CampaignMode
 from app.schemas.call_script import CallScriptCreate, CallScriptResponse, TestCallRequest
 from app.engine.tts import synthesize_node_prompt
 from app.esl.connection import esl_manager
@@ -200,13 +200,15 @@ async def test_call_script(request: TestCallRequest, db: AsyncSession = Depends(
             script_id=request.script_id,
             status=CampaignStatus.DRAFT,
             enable_amd=request.enable_amd,
-            hangup_on_voicemail=request.hangup_on_voicemail
+            campaign_mode=CampaignMode(request.campaign_mode),
+            vm_drop_audio_id=request.vm_drop_audio_id,
         )
         db.add(camp)
     else:
         camp.script_id = request.script_id
         camp.enable_amd = request.enable_amd
-        camp.hangup_on_voicemail = request.hangup_on_voicemail
+        camp.campaign_mode = CampaignMode(request.campaign_mode)
+        camp.vm_drop_audio_id = request.vm_drop_audio_id
         
     # Clear existing relations
     camp.sip_gateways = []
@@ -249,9 +251,20 @@ async def test_call_script(request: TestCallRequest, db: AsyncSession = Depends(
     import uuid
     test_call_id = str(uuid.uuid4())
     
+    # Resolve campaign_mode and vm_drop_audio_id for channel variables
+    campaign_mode_val = camp.campaign_mode.value if camp.campaign_mode else 'A'
+    vm_drop_id_val = str(camp.vm_drop_audio_id) if camp.vm_drop_audio_id else ''
+    amd_config_val = ''
+    if camp.amd_config:
+        import json as json_lib
+        amd_config_val = json_lib.dumps(camp.amd_config)
+    
     vars = (
         f"{{origination_uuid={test_call_id},"
         f"campaign_id={camp.id},"
+        f"campaign_mode={campaign_mode_val},"
+        f"vm_drop_audio_id={vm_drop_id_val},"
+        f"amd_config={amd_config_val},"
         f"is_test_call=true,"
         f"ignore_early_media=true,"
         f"absolute_codec_string=PCMU,"

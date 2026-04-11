@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 from uuid import UUID
 from datetime import datetime, timezone
@@ -118,11 +119,21 @@ class CampaignDialer:
             caller_id_number = random_cid.phone_number
         
         # We uniquely track the resulting call by assigning FreeSWITCH vars
+        # campaign_mode controls AMD behavior (A=hangup machine, B=VM drop, C=conservative)
+        # vm_drop_audio_id tells the Lua script which audio to play after beep (Mode B)
+        # amd_config carries per-campaign AMD tuning overrides as JSON
+        campaign_mode_val = campaign.campaign_mode.value if hasattr(campaign, 'campaign_mode') and campaign.campaign_mode else 'A'
+        vm_drop_id_val = str(campaign.vm_drop_audio_id) if campaign.vm_drop_audio_id else ''
+        amd_config_val = json.dumps(campaign.amd_config) if campaign.amd_config else ''
+        
         vars = (
             f"{{campaign_id={campaign.id},"
             f"contact_id={item.contact_id},"
             f"dial_queue_id={item.id},"
             f"contact_phone={item.phone_number},"
+            f"campaign_mode={campaign_mode_val},"
+            f"vm_drop_audio_id={vm_drop_id_val},"
+            f"amd_config={amd_config_val},"
             f"ignore_early_media=true,"
             f"absolute_codec_string=PCMU,"
             f"disable_video=true,"

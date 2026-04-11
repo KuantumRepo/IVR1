@@ -58,4 +58,5 @@ class TestCallRequest(BaseModel):
     caller_id_id: Optional[UUID] = None
     agent_id: Optional[UUID] = None
     enable_amd: bool = True
-    hangup_on_voicemail: bool = True
+    campaign_mode: str = "A"
+    vm_drop_audio_id: Optional[UUID] = None

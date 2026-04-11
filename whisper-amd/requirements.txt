@@ -1,0 +1,19 @@
+# Whisper AMD Sidecar — Python dependencies
+# All CPU-only, no GPU/CUDA required
+
+# ASR engine — CTranslate2-powered Whisper inference
+faster-whisper==1.1.0
+
+# Web framework + WebSocket support
+fastapi==0.115.0
+uvicorn[standard]==0.34.0
+websockets==14.1
+
+# Text classifier (TF-IDF + LogisticRegression)
+scikit-learn==1.6.1
+joblib==1.4.2
+
+# Audio processing
+numpy==2.2.4
+soundfile==0.13.1
+requests==2.32.3

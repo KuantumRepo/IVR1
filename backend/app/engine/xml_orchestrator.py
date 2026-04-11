@@ -113,7 +113,7 @@ async def generate_agent_xml(agent: Agent):
         # Provision agent into mod_callcenter
         await esl_manager.bgapi(f"callcenter_config agent add {ext} Callback")
         await esl_manager.bgapi(f"callcenter_config agent set contact {ext} user/{ext}")
-        await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
+        await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Available'")
         await esl_manager.bgapi(f"callcenter_config agent set state {ext} Waiting")
         await esl_manager.bgapi(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
         logger.info(f"Provisioned Agent {ext} into mod_callcenter")

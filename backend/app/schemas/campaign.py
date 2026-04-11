@@ -2,7 +2,7 @@ from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime, time
-from app.models.core import CampaignStatus
+from app.models.core import CampaignStatus, CampaignMode
 
 class CampaignBase(BaseModel):
     name: str
@@ -23,6 +23,11 @@ class CampaignBase(BaseModel):
     hangup_on_voicemail: bool = True
     enable_vm_drop: bool = False
     use_legacy_dtmf: bool = False
+    
+    # AMD behavior mode: A (hangup on machine), B (VM drop after beep), C (conservative)
+    campaign_mode: str = "A"
+    # Audio file ID for voicemail drop (Mode B only)
+    vm_drop_audio_id: Optional[UUID] = None
 
 class CampaignCreate(CampaignBase):
     list_ids: List[UUID]

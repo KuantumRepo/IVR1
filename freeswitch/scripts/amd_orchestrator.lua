@@ -278,8 +278,61 @@ end
 local final_decision_sec = os.difftime(os.time(), decision_start)
 local final_decision_ms = final_decision_sec * 1000  -- approximate ms
 
+-- ── Apply Campaign Mode Override BEFORE setting any variables ────────────────
+-- Mode C treats UNKNOWN as HUMAN (conservative: minimize false negatives).
+-- This override must happen before setVariable so that CHANNEL_EXECUTE_COMPLETE
+-- carries the correct "human" value when Python reads it.
+
+if final_result == "unknown" and campaign_mode == "C" then
+    final_result = "human"
+    freeswitch.consoleLog("INFO",
+        "[AMD] UNKNOWN + Mode C (conservative) — overriding result to HUMAN\n")
+end
+
+-- ── Pre-Event Cleanup: Stop avmd where appropriate ───────────────────────────
+-- ALL session:execute() calls MUST happen BEFORE setting channel variables
+-- and BEFORE firing the amd::result event.  Once the event fires, Python's
+-- CHANNEL_EXECUTE_COMPLETE handler may send commands to this channel.  Those
+-- commands queue behind event-lock, but we must not add more session:execute()
+-- calls after the event or we create ordering ambiguity on the channel thread.
+--
+-- Campaign Mode Behavior Matrix:
+--   HUMAN (all modes)       → stop avmd, keep call alive for IVR
+--   MACHINE + Mode B        → keep avmd running for beep detection
+--   MACHINE + Mode A/C      → stop avmd, then hangup (after event fire)
+--   UNKNOWN (non-C, since C was overridden above) → stop avmd, then hangup
+
+if session:ready() then
+    if final_result == "human" then
+        -- Stop avmd (no longer needed), keep call alive for IVR handoff
+        session:execute("avmd", "stop")
+        freeswitch.consoleLog("INFO",
+            "[AMD] HUMAN — avmd stopped, call alive for IVR handoff\n")
+
+    elseif final_result == "machine" then
+        if campaign_mode == "B" then
+            -- Mode B: keep avmd running for beep detection
+            freeswitch.consoleLog("INFO",
+                "[AMD] MACHINE + Mode B — keeping avmd active for beep detection\n")
+        else
+            -- Mode A/C: stop avmd before hangup
+            session:execute("avmd", "stop")
+            freeswitch.consoleLog("INFO",
+                "[AMD] MACHINE + Mode " .. campaign_mode .. " — avmd stopped, will hangup\n")
+        end
+
+    elseif final_result == "unknown" then
+        -- Unknown (non-C, since C was overridden to human above)
+        session:execute("avmd", "stop")
+        freeswitch.consoleLog("INFO",
+            "[AMD] UNKNOWN + Mode " .. campaign_mode .. " — avmd stopped, will hangup\n")
+    end
+end
+
 -- ── Set channel variables for CDR telemetry ──────────────────────────────────
--- These are read by handlers.py on CHANNEL_HANGUP_COMPLETE
+-- HARD REQUIREMENT: These MUST be set BEFORE result_event:fire() so that
+-- CHANNEL_EXECUTE_COMPLETE carries them and Python can read them.
+-- They are also read by handlers.py on CHANNEL_HANGUP_COMPLETE for CDR.
 
 if session:ready() then
     session:setVariable("amd_result", final_result)
@@ -299,22 +352,13 @@ freeswitch.consoleLog("INFO",
     " elapsed=" .. final_decision_sec .. "s\n"
 )
 
--- ── Apply Campaign Mode Behavior Matrix ──────────────────────────────────────
---
--- Event                  | Mode A              | Mode B                            | Mode C
--- -----------------------|---------------------|-----------------------------------|----------------------
--- HUMAN detected         | Continue IVR        | Continue IVR                      | Continue IVR
--- MACHINE detected       | Hangup immediately  | Keep avmd running, wait for beep  | Hangup immediately
--- avmd::beep fires       | —                   | Play vm_drop_audio, then hangup   | —
--- UNKNOWN (timeout >8s)  | Hangup              | Hangup                            | Continue IVR (safe)
---
--- CRITICAL: All hangups are executed INLINE via session:hangup() for zero
--- latency. No ESL race condition — the call terminates in the same thread.
-
--- ── Fire amd::result CUSTOM event FIRST ──────────────────────────────────────
--- Fire the telemetry event BEFORE hanging up so handlers.py can update
--- database counters and test logs. The event is processed asynchronously
--- by Python, but the hangup below is synchronous and immediate.
+-- ── Fire amd::result CUSTOM event (telemetry only) ───────────────────────────
+-- This is the LAST action before hangup/return.  By this point:
+--   1. All session:execute() cleanup is done (avmd stop)
+--   2. All channel variables are set (amd_result, amd_layer, etc.)
+--   3. Python receives this for database counters and test logs
+--   4. For HUMAN results, Python starts IVR via CHANNEL_EXECUTE_COMPLETE
+--      (which fires AFTER this script returns and frees the channel thread)
 
 local result_event = freeswitch.Event("CUSTOM", "amd::result")
 result_event:addHeader("Unique-ID", uuid)
@@ -331,63 +375,31 @@ result_event:fire()
 
 freeswitch.consoleLog("INFO", "[AMD] Fired amd::result event for " .. uuid .. "\n")
 
--- ── Execute decision ─────────────────────────────────────────────────────────
+-- ── Post-Event: Hangup if needed ─────────────────────────────────────────────
+-- ONLY session:hangup() is allowed here — NO more session:execute() calls.
+-- For HUMAN results, this script simply returns.  CHANNEL_EXECUTE_COMPLETE
+-- fires for the "lua" app, Python reads variable_amd_result == "human"
+-- from the event, and starts IVR on the now-free channel thread.
 
 if not session:ready() then
     return
 end
 
-if final_result == "human" then
-    -- ┌─────────────────────────────────────────────────────────────────────┐
-    -- │ HUMAN — All Modes: Stop avmd, let handlers.py start IVR           │
-    -- │ The call stays alive. Python catches the amd::result event and    │
-    -- │ begins IVR node playback via _start_human_playlist().             │
-    -- └─────────────────────────────────────────────────────────────────────┘
-    session:execute("avmd", "stop")
+if final_result == "machine" and campaign_mode ~= "B" then
+    -- MACHINE + Mode A/C: Hangup immediately (zero SIP waste)
+    -- session:hangup() fires synchronously in the FS media thread.
     freeswitch.consoleLog("INFO",
-        "[AMD] HUMAN detected — avmd stopped, call alive for IVR handoff\n")
-
-elseif final_result == "machine" then
-    if campaign_mode == "B" then
-        -- ┌─────────────────────────────────────────────────────────────────┐
-        -- │ MACHINE + Mode B: Keep avmd running for beep detection         │
-        -- │ Do NOT hangup. Do NOT stop avmd. handlers.py will catch the   │
-        -- │ avmd::beep event, play the VM drop audio, then hangup.        │
-        -- └─────────────────────────────────────────────────────────────────┘
-        freeswitch.consoleLog("INFO",
-            "[AMD] MACHINE + Mode B — keeping avmd active for beep detection\n")
-    else
-        -- ┌─────────────────────────────────────────────────────────────────┐
-        -- │ MACHINE + Mode A/C: Hangup immediately (zero SIP waste)       │
-        -- │ session:hangup() fires synchronously in the FS media thread. │
-        -- │ No ESL round-trip, no race condition, no billing leak.        │
-        -- └─────────────────────────────────────────────────────────────────┘
-        session:execute("avmd", "stop")
-        freeswitch.consoleLog("INFO",
-            "[AMD] MACHINE + Mode " .. campaign_mode .. " — executing session:hangup()\n")
-        session:hangup("NORMAL_CLEARING")
-    end
+        "[AMD] MACHINE + Mode " .. campaign_mode .. " — executing session:hangup()\n")
+    session:hangup("NORMAL_CLEARING")
 
 elseif final_result == "unknown" then
-    if campaign_mode == "C" then
-        -- ┌─────────────────────────────────────────────────────────────────┐
-        -- │ UNKNOWN + Mode C (conservative): Treat as human, play IVR     │
-        -- │ Override result to "human" so handlers.py starts IVR.         │
-        -- │ This minimizes false negatives at the cost of some agent time.│
-        -- └─────────────────────────────────────────────────────────────────┘
-        session:execute("avmd", "stop")
-        session:setVariable("amd_result", "human")
-        freeswitch.consoleLog("INFO",
-            "[AMD] UNKNOWN + Mode C (conservative) — treating as HUMAN for IVR\n")
-    else
-        -- ┌─────────────────────────────────────────────────────────────────┐
-        -- │ UNKNOWN + Mode A/B: Hangup immediately                        │
-        -- │ We can't determine what answered. Don't waste agent time or   │
-        -- │ SIP billing on an ambiguous result.                           │
-        -- └─────────────────────────────────────────────────────────────────┘
-        session:execute("avmd", "stop")
-        freeswitch.consoleLog("INFO",
-            "[AMD] UNKNOWN + Mode " .. campaign_mode .. " — executing session:hangup()\n")
-        session:hangup("NORMAL_CLEARING")
-    end
+    -- UNKNOWN + Mode A/B: Hangup immediately
+    -- (Mode C was already overridden to "human" above, so won't reach here)
+    freeswitch.consoleLog("INFO",
+        "[AMD] UNKNOWN + Mode " .. campaign_mode .. " — executing session:hangup()\n")
+    session:hangup("NORMAL_CLEARING")
 end
+
+-- For HUMAN and MACHINE+Mode_B: script returns, channel stays alive.
+-- CHANNEL_EXECUTE_COMPLETE for "lua" fires → Python starts IVR (human)
+-- or waits for avmd::beep (machine mode B).

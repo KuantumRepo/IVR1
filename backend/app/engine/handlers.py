@@ -160,10 +160,9 @@ async def _handle_amd_result(event):
                 return
 
             if amd_result == "human":
-                # All modes: start IVR for human
-                await log_test_trace(event, "IVR", "Human confirmed. Initiating IVR script.")
-                is_test = event.get("variable_is_test_call") == "true"
-                await _start_human_playlist(uuid, camp, is_test=is_test)
+                # Telemetry only — IVR is triggered by CHANNEL_EXECUTE_COMPLETE
+                # for the Lua app, guaranteeing the channel thread is free.
+                await log_test_trace(event, "IVR", "Human confirmed by AMD. IVR starts on Lua completion.")
 
             elif amd_result == "machine":
                 camp.voicemail_count += 1
@@ -387,7 +386,22 @@ async def on_channel_bridge(event):
             logger.error(f"Failed to lookup agent for screen pop: {e}", exc_info=True)
 
 
-# ─── CHANNEL_HANGUP_COMPLETE ──────────────────────────────────────────────────
+# ─── CHANNEL_HANGUP (Future Cleanup) ───────────────────────────────────────────────────────
+
+@_consumer.handle("CHANNEL_HANGUP")
+async def on_channel_hangup(event):
+    """Immediately cancel all pending execute futures for this channel.
+
+    Fires BEFORE CHANNEL_HANGUP_COMPLETE.  Cancelling futures here prevents
+    leaked coroutines when calls drop mid-AMD (up to 10s per call at scale).
+    Without this, each dropped call leaks a Future that never resolves.
+    """
+    uuid = event.get("Unique-ID")
+    if uuid:
+        esl_manager.cancel_pending_for_uuid(uuid)
+
+
+# ─── CHANNEL_HANGUP_COMPLETE ──────────────────────────────────────────────────────────────────
 
 @_consumer.handle("CHANNEL_HANGUP_COMPLETE")
 async def on_hangup(event):
@@ -582,11 +596,50 @@ async def _start_human_playlist(uuid: str, campaign: Campaign, is_test: bool = F
 
 @_consumer.handle("CHANNEL_EXECUTE_COMPLETE")
 async def on_execute_complete(event):
-    """Intercepts play_and_get_digits completion and routes based on pressed digit."""
-    if event.get("Application") != "play_and_get_digits":
+    """
+    Central execute-complete dispatcher.
+
+    Handles:
+      1. Resolving pending execute_and_wait() futures via Application-UUID
+      2. AMD Lua script completion → starts IVR for human-classified calls
+      3. play_and_get_digits completion → routes IVR based on pressed digit
+    """
+    uuid = event.get("Unique-ID")
+    application = event.get("Application")
+
+    # ── Resolve pending execute_and_wait futures (non-blocking) ───────────────
+    app_uuid = event.get("Application-UUID")
+    if app_uuid and uuid:
+        esl_manager.resolve_execute(app_uuid, uuid, event)
+
+    # ── AMD Lua script completed → channel thread is now free ───────────────
+    # The Lua script sets channel variables BEFORE firing amd::result and
+    # BEFORE returning.  By the time CHANNEL_EXECUTE_COMPLETE fires for
+    # the "lua" app, the channel thread is idle and safe to receive new
+    # sendmsg commands (play_and_get_digits for IVR).
+    if application == "lua":
+        amd_result = event.get("variable_amd_result")
+        campaign_id = event.get("variable_campaign_id")
+        if amd_result == "human" and campaign_id and uuid:
+            logger.info(f"Lua AMD complete on {uuid} — human detected, starting IVR")
+            await log_test_trace(
+                event, "IVR",
+                "AMD Lua returned. Channel free — starting IVR playback."
+            )
+            try:
+                async with AsyncSessionLocal() as db:
+                    camp = await db.get(Campaign, UUID(campaign_id))
+                    if camp:
+                        is_test = event.get("variable_is_test_call") == "true"
+                        await _start_human_playlist(uuid, camp, is_test=is_test)
+            except Exception as e:
+                logger.error(f"IVR start after AMD on {uuid}: {e}", exc_info=True)
         return
 
-    uuid          = event.get("Unique-ID")
+    # ── IVR play_and_get_digits completion ───────────────────────────────────
+    if application != "play_and_get_digits":
+        return
+
     digit         = event.get("variable_digit_rx")
     node_id_str   = event.get("variable_current_ivr_node_id")
     campaign_id   = event.get("variable_campaign_id")

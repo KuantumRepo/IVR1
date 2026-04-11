@@ -18,6 +18,7 @@ Why not reuse the Consumer's connection for commands?
 """
 import asyncio
 import logging
+import uuid as uuid_mod
 from dataclasses import dataclass, field
 from genesis import Consumer, Inbound
 
@@ -185,6 +186,12 @@ class ESLManager:
         self.consumer = self._consumer
         self.connected = False
 
+        # ── Execute Tracking (per-UUID async futures) ─────────────────────
+        # Event-UUID → asyncio.Future — resolved by CHANNEL_EXECUTE_COMPLETE
+        self._pending_executes: dict[str, asyncio.Future] = {}
+        # Channel UUID → set of Event-UUIDs — for O(1) bulk cancel on hangup
+        self._uuid_pending: dict[str, set[str]] = {}
+
     async def start(self):
         """
         Launch Consumer + Pool. Called once from app startup (lifespan).
@@ -235,15 +242,125 @@ class ESLManager:
         """Shorthand for foreground API calls."""
         return await self.send_command(f"api {cmd}")
 
-    async def execute(self, uuid: str, app: str, arg: str = "") -> str | None:
+    async def execute(self, uuid: str, app: str, arg: str = "",
+                      event_lock: bool = True) -> str | None:
         """
         Execute an application on a channel using ESL sendmsg protocol.
-        This is the industry-standard way to run apps on FreeSWITCH channels.
+
+        event-lock: true (default) serializes execution on the channel thread,
+        preventing race conditions between overlapping commands on the same UUID.
         """
         cmd = f"sendmsg {uuid}\ncall-command: execute\nexecute-app-name: {app}"
         if arg:
             cmd += f"\nexecute-app-arg: {arg}"
+        if event_lock:
+            cmd += "\nevent-lock: true"
         return await self.send_command(cmd)
+
+    async def execute_and_wait(self, uuid: str, app: str, arg: str = "",
+                                timeout: float = 30.0) -> dict | None:
+        """
+        Execute an application and await its CHANNEL_EXECUTE_COMPLETE event.
+
+        Non-blocking on the shared ESL socket: the sendmsg is dispatched
+        immediately via the pool, and this coroutine awaits a per-UUID Future
+        that is resolved when CHANNEL_EXECUTE_COMPLETE arrives with the
+        matching Application-UUID.  Other channels continue processing on
+        the same event loop without contention.
+
+        Guarantees:
+          - Hard timeout prevents leaked futures on stuck channels.
+          - CHANNEL_HANGUP cancels the future immediately if the call drops
+            mid-execution (see cancel_pending_for_uuid).
+        """
+        event_uuid = str(uuid_mod.uuid4())
+        loop = asyncio.get_running_loop()
+        future = loop.create_future()
+
+        # Register in both indexes for O(1) lookup and O(1) hangup cleanup
+        self._pending_executes[event_uuid] = future
+        if uuid not in self._uuid_pending:
+            self._uuid_pending[uuid] = set()
+        self._uuid_pending[uuid].add(event_uuid)
+
+        # Build sendmsg with event-lock + Event-UUID correlation header
+        cmd = (
+            f"sendmsg {uuid}\n"
+            f"call-command: execute\n"
+            f"execute-app-name: {app}"
+        )
+        if arg:
+            cmd += f"\nexecute-app-arg: {arg}"
+        cmd += f"\nevent-lock: true\nEvent-UUID: {event_uuid}"
+
+        # Dispatch to pool — returns after FreeSWITCH ACKs the sendmsg.
+        # Does NOT wait for the application to finish.
+        send_result = await self.send_command(cmd)
+        if send_result is None:
+            self._cleanup_pending(event_uuid, uuid)
+            return None
+
+        # Await completion per-UUID.  asyncio.wait_for yields to the event
+        # loop, so other coroutines (other channels, other commands) proceed
+        # concurrently.  The future is resolved by resolve_execute() which
+        # is called from the CHANNEL_EXECUTE_COMPLETE event handler.
+        try:
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"execute_and_wait timeout ({timeout}s): {app} on {uuid} "
+                f"[event_uuid={event_uuid}]"
+            )
+            return None
+        except asyncio.CancelledError:
+            logger.debug(f"execute_and_wait cancelled: {app} on {uuid}")
+            return None
+        finally:
+            # Idempotent cleanup — safe even if resolve/cancel already ran
+            self._cleanup_pending(event_uuid, uuid)
+
+    def resolve_execute(self, event_uuid: str, channel_uuid: str, event_data: dict):
+        """
+        Resolve a pending execute future when CHANNEL_EXECUTE_COMPLETE arrives.
+        Called from the event handler — must be non-blocking (no await).
+
+        Does NOT modify the tracking dicts; the finally block in
+        execute_and_wait handles cleanup after the awaiting coroutine resumes.
+        """
+        future = self._pending_executes.get(event_uuid)
+        if future and not future.done():
+            future.set_result(event_data)
+
+    def cancel_pending_for_uuid(self, channel_uuid: str):
+        """
+        Cancel ALL pending execute futures for a channel UUID.
+        Called on CHANNEL_HANGUP to prevent leaked futures.
+
+        At high volume with AMD taking up to 10s, hangups mid-AMD are
+        frequent.  Without this cleanup, each dropped call leaks a Future
+        that never resolves, eventually exhausting process memory.
+        """
+        event_uuids = self._uuid_pending.pop(channel_uuid, set())
+        cancelled = 0
+        for event_uuid in event_uuids:
+            future = self._pending_executes.pop(event_uuid, None)
+            if future and not future.done():
+                future.cancel()
+                cancelled += 1
+        if cancelled:
+            logger.info(
+                f"Hangup cleanup: cancelled {cancelled} pending execute(s) "
+                f"for {channel_uuid}"
+            )
+
+    def _cleanup_pending(self, event_uuid: str, channel_uuid: str):
+        """Remove a single pending execute entry from both indexes."""
+        self._pending_executes.pop(event_uuid, None)
+        pending = self._uuid_pending.get(channel_uuid)
+        if pending is not None:
+            pending.discard(event_uuid)
+            if not pending:
+                del self._uuid_pending[channel_uuid]
 
     async def reload_xml(self):
         await self.api("reloadxml")

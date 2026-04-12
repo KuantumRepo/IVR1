@@ -8,7 +8,6 @@ class ContactBase(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
-    is_dnc: bool = False
 
 class ContactCreate(ContactBase):
     pass
@@ -16,6 +15,7 @@ class ContactCreate(ContactBase):
 class ContactResponse(ContactBase):
     id: UUID
     list_id: UUID
+    created_at: Optional[datetime] = None
     model_config = ConfigDict(from_attributes=True)
 
 class ContactListBase(BaseModel):

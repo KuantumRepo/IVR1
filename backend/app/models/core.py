@@ -217,7 +217,7 @@ class IvrNode(Base):
     name = Column(String(255))
     is_start_node = Column(Boolean, default=False)
     
-    prompt_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id'))
+    prompt_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id', ondelete="SET NULL"))
     tts_text = Column(Text)
     tts_voice = Column(String(100), default='af_heart')
     
@@ -234,7 +234,7 @@ class IvrRoute(Base):
     action_type = Column(Enum(IvrActionType), nullable=False)
     
     target_node_id = Column(UUID(as_uuid=True), ForeignKey('ivr_nodes.id', ondelete="SET NULL"), nullable=True)
-    response_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id'), nullable=True)
+    response_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id', ondelete="SET NULL"), nullable=True)
     
     node = relationship("IvrNode", foreign_keys=[node_id], back_populates="routes")
     target_node = relationship("IvrNode", foreign_keys=[target_node_id])
@@ -263,7 +263,7 @@ class Campaign(Base):
     # AMD campaign mode: A (hangup on machine), B (VM drop), C (conservative/assume human)
     campaign_mode = Column(Enum(CampaignMode), default=CampaignMode.A, nullable=False)
     # Audio file to play as a voicemail drop when Mode B detects beep
-    vm_drop_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id'), nullable=True)
+    vm_drop_audio_id = Column(UUID(as_uuid=True), ForeignKey('audio_files.id', ondelete="SET NULL"), nullable=True)
     # Per-campaign AMD tuning overrides (JSONB). When null, system defaults apply.
     # Example: {"initial_silence": 4000, "total_analysis_time": 6000, "short_speech_threshold_sec": 1.5}
     amd_config = Column(JSONB, nullable=True, default=None)

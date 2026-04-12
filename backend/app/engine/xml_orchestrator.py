@@ -34,10 +34,12 @@ async def generate_gateway_xml(gateway: SipGateway):
         if gateway.sip_password:
             xml_content += f'    <param name="password" value="{gateway.sip_password}"/>\n'
             
-        # Optional params
-        xml_content += '    <param name="register" value="true"/>\n'
+        # IP-auth trunks must NOT register (causes 904 "no matching challenge")
+        register = "false" if gateway.auth_type and gateway.auth_type.value == "IP_BASED" else "true"
+        xml_content += f'    <param name="register" value="{register}"/>\n'
         xml_content += '    <param name="retry-seconds" value="30"/>\n'
         xml_content += '    <param name="ping" value="25"/>\n'
+        xml_content += '    <param name="dtmf-type" value="rfc2833"/>\n'
         
         xml_content += """  </gateway>
 </include>

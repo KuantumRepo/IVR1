@@ -46,6 +46,64 @@ async def _sync_agents_to_callcenter():
     except Exception as e:
         logger.error(f"Agent sync failed: {e}", exc_info=True)
 
+async def _sync_gateway_xml_on_startup():
+    """Regenerate all gateway XML files from the database on startup.
+    
+    Gateway XML files are persisted on the Docker host volume mount at
+    freeswitch/conf/sip_profiles/external/. If the backend code changes
+    (e.g. adding dtmf-type or fixing register=false for IP_BASED auth),
+    the stale XML files on disk keep the OLD settings, causing:
+      - 904 "no matching challenge" for IP-auth trunks still set to register=true
+      - Missing dtmf-type causing DTMF failures
+    
+    This function purges all dynamic gateway XMLs and regenerates them from
+    the current database state + current code, ensuring consistency.
+    """
+    import asyncio
+    from pathlib import Path
+    from app.core.database import AsyncSessionLocal
+    from app.models.core import SipGateway
+    from app.api.v1.sip_gateways import generate_freeswitch_xml
+    from sqlalchemy.future import select
+    
+    await asyncio.sleep(3)
+    
+    try:
+        # Resolve the gateway XML directory
+        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        workspace_dir = os.path.dirname(backend_dir)
+        gw_dir = Path(workspace_dir) / "freeswitch" / "conf" / "sip_profiles" / "external"
+        gw_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Purge ALL existing gateway XMLs (they may be stale)
+        for xml_file in gw_dir.glob("*.xml"):
+            xml_file.unlink()
+            logger.info(f"Purged stale gateway XML: {xml_file.name}")
+        
+        # Regenerate from DB
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(select(SipGateway).where(SipGateway.is_active == True))
+            gateways = result.scalars().all()
+            
+            for gw in gateways:
+                xml_content = generate_freeswitch_xml(gw)
+                filepath = gw_dir / f"{gw.id}.xml"
+                with open(filepath, "w", encoding="utf-8") as f:
+                    f.write(xml_content)
+                register_mode = "IP Auth" if gw.auth_type and gw.auth_type.value == "IP_BASED" else "Register"
+                logger.info(f"Generated gateway XML: {gw.name} ({gw.id}) — {register_mode}")
+            
+            logger.info(f"Regenerated {len(gateways)} gateway XML file(s) from database")
+        
+        # Tell FreeSWITCH to reload the new XML
+        from app.esl.connection import esl_manager
+        await esl_manager.api("reloadxml")
+        await esl_manager.bgapi("sofia profile external rescan")
+        logger.info("FreeSWITCH XML reloaded + external profile rescanned")
+        
+    except Exception as e:
+        logger.error(f"Gateway XML sync failed: {e}", exc_info=True)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from app.engine.dialer import dialer_engine
@@ -60,6 +118,9 @@ async def lifespan(app: FastAPI):
     # Re-provision all agents into mod_callcenter after ESL connects
     # (mod_callcenter agents are in-memory — lost on FS restart)
     asyncio.create_task(_sync_agents_to_callcenter())
+    
+    # Regenerate all gateway XMLs from DB (purges stale files)
+    asyncio.create_task(_sync_gateway_xml_on_startup())
     
     yield
     
@@ -108,12 +169,41 @@ async def root():
 
 @app.get("/health")
 async def health():
-    return {
-        "status": "healthy",
-        "redis": "unchecked", 
-        "postgres": "unchecked",
-        "freeswitch": "unchecked"
-    }
+    health_status = {"status": "healthy", "redis": "unknown", "postgres": "unknown", "freeswitch": "unknown"}
+    is_healthy = True
+
+    # Check Redis
+    try:
+        from app.core.redis import redis_client
+        await redis_client.ping()
+        health_status["redis"] = "connected"
+    except Exception as e:
+        health_status["redis"] = f"error: {str(e)[:100]}"
+        is_healthy = False
+
+    # Check PostgreSQL
+    try:
+        from app.core.database import AsyncSessionLocal
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as db:
+            await db.execute(text("SELECT 1"))
+        health_status["postgres"] = "connected"
+    except Exception as e:
+        health_status["postgres"] = f"error: {str(e)[:100]}"
+        is_healthy = False
+
+    # Check FreeSWITCH ESL
+    try:
+        from app.esl.connection import esl_manager
+        health_status["freeswitch"] = "connected" if esl_manager.connected else "disconnected"
+        if not esl_manager.connected:
+            is_healthy = False
+    except Exception as e:
+        health_status["freeswitch"] = f"error: {str(e)[:100]}"
+        is_healthy = False
+
+    health_status["status"] = "healthy" if is_healthy else "degraded"
+    return health_status
 
 if __name__ == "__main__":
     import uvicorn

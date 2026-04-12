@@ -1,49 +1,69 @@
 import os
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func
+from sqlalchemy import func, update, delete
 from typing import List
 from uuid import UUID
+from datetime import datetime, timezone
 
 from app.core.database import get_db
-from app.models.core import Campaign, ContactList, SipGateway, CallerId, Agent, DialQueue, Contact, CallLog
+from app.models.core import (
+    Campaign, ContactList, SipGateway, CallerId, Agent,
+    DialQueue, Contact, CallLog, CampaignStatus, campaign_contact_lists
+)
 from app.schemas.campaign import CampaignCreate, CampaignResponse
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/campaigns", tags=["Campaigns"])
+
 
 @router.post("/", response_model=CampaignResponse)
 async def create_campaign(campaign_in: CampaignCreate, db: AsyncSession = Depends(get_db)):
     campaign_data = campaign_in.model_dump(exclude={"list_ids", "gateway_ids", "caller_id_ids", "agent_ids"})
     campaign = Campaign(**campaign_data)
-    
+
     # Associate relations dynamically securely
     if campaign_in.list_ids:
         cl_res = await db.execute(select(ContactList).where(ContactList.id.in_(campaign_in.list_ids)))
         campaign.contact_lists = cl_res.scalars().all()
-        
+
     if campaign_in.gateway_ids:
         sg_res = await db.execute(select(SipGateway).where(SipGateway.id.in_(campaign_in.gateway_ids)))
         campaign.sip_gateways = sg_res.scalars().all()
-        
+
     if campaign_in.caller_id_ids:
         cid_res = await db.execute(select(CallerId).where(CallerId.id.in_(campaign_in.caller_id_ids)))
         campaign.caller_ids = cid_res.scalars().all()
-        
+
     if campaign_in.agent_ids:
         ag_res = await db.execute(select(Agent).where(Agent.id.in_(campaign_in.agent_ids)))
         campaign.agents = ag_res.scalars().all()
-        
+
     db.add(campaign)
     await db.commit()
     await db.refresh(campaign)
-    
+
     return campaign
+
 
 @router.get("/", response_model=List[CampaignResponse])
 async def list_campaigns(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Campaign).order_by(Campaign.created_at.desc()))
     return result.scalars().all()
+
+
+@router.get("/{campaign_id}", response_model=CampaignResponse)
+async def get_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get a single campaign by ID."""
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
+
 
 @router.post("/{campaign_id}/start")
 async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
@@ -51,14 +71,20 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     campaign = result.scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-        
-    if campaign.status == "ACTIVE":
+
+    if campaign.status == CampaignStatus.ACTIVE:
         return {"status": "already active"}
-        
-    # Queue generation strategy
-    if campaign.dialed_count == 0:
-        # Load contacts from the campaign's associated contact lists via M2M table
-        from app.models.core import campaign_contact_lists
+
+    if campaign.status == CampaignStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Campaign is already completed. Create a new campaign.")
+
+    if campaign.status == CampaignStatus.ABORTED:
+        raise HTTPException(status_code=400, detail="Campaign was aborted. Create a new campaign.")
+
+    now = datetime.now(timezone.utc)
+
+    # Fresh start — generate queue from contacts
+    if campaign.dialed_count == 0 and campaign.status == CampaignStatus.DRAFT:
         cl_result = await db.execute(
             select(Contact)
             .join(Contact.contact_list)
@@ -66,7 +92,7 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
             .where(campaign_contact_lists.c.campaign_id == campaign_id)
         )
         contacts = cl_result.scalars().all()
-        
+
         queues = []
         for c in contacts:
             queues.append(DialQueue(
@@ -74,24 +100,84 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
                 contact_id=c.id,
                 phone_number=c.phone_number
             ))
-        
+
         if queues:
             db.add_all(queues)
         campaign.total_contacts = len(queues)
-        
-    campaign.status = "ACTIVE"
+        campaign.started_at = now
+        logger.info(f"Campaign {campaign_id}: queued {len(queues)} contacts for fresh start")
+
+    # Resume from PAUSED — unlock any stale locked rows
+    elif campaign.status == CampaignStatus.PAUSED:
+        unlock_result = await db.execute(
+            update(DialQueue)
+            .where(DialQueue.campaign_id == campaign_id)
+            .where(DialQueue.locked_by != None)  # noqa: E711
+            .values(locked_by=None, locked_at=None)
+        )
+        unlocked = unlock_result.rowcount
+        if unlocked > 0:
+            logger.info(f"Campaign {campaign_id}: unlocked {unlocked} stale queue items on resume")
+
+        # Set started_at if it was never set (edge case)
+        if not campaign.started_at:
+            campaign.started_at = now
+
+    campaign.status = CampaignStatus.ACTIVE
     await db.commit()
-    
+
     return {"status": "started", "queue_size": campaign.total_contacts}
-    
+
+
 @router.post("/{campaign_id}/pause")
 async def pause_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     campaign = result.scalar_one_or_none()
-    if campaign:
-        campaign.status = "PAUSED"
-        await db.commit()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.status != CampaignStatus.ACTIVE:
+        return {"status": "not active", "current_status": campaign.status.value}
+
+    campaign.status = CampaignStatus.PAUSED
+    await db.commit()
+    logger.info(f"Campaign {campaign_id} paused")
     return {"status": "paused"}
+
+
+@router.post("/{campaign_id}/stop")
+async def stop_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
+    """
+    Force-stop / abort a campaign.
+
+    Sets status to ABORTED, clears remaining dial queue, and resets Redis
+    active call counter. Active calls in FreeSWITCH will naturally complete
+    and their hangup events will be handled normally.
+    """
+    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if campaign.status in (CampaignStatus.COMPLETE, CampaignStatus.ABORTED):
+        return {"status": "already terminated", "current_status": campaign.status.value}
+
+    # Clear remaining dial queue
+    await db.execute(
+        delete(DialQueue).where(DialQueue.campaign_id == campaign_id)
+    )
+
+    campaign.status = CampaignStatus.ABORTED
+    campaign.completed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    # Reset Redis active counter so it doesn't pollute future campaigns
+    from app.core.redis import redis_client
+    await redis_client.set(f"campaign_active:{campaign_id}", 0)
+
+    logger.info(f"Campaign {campaign_id} aborted — queue cleared")
+    return {"status": "aborted"}
+
 
 @router.delete("/{campaign_id}")
 async def delete_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
@@ -99,13 +185,24 @@ async def delete_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db))
     campaign = result.scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
     # Clean dial queue first
-    dq_result = await db.execute(select(DialQueue).where(DialQueue.campaign_id == campaign_id))
-    for dq in dq_result.scalars().all():
-        await db.delete(dq)
+    await db.execute(
+        delete(DialQueue).where(DialQueue.campaign_id == campaign_id)
+    )
+    # Clean call logs (FK is SET NULL, so we explicitly delete to avoid orphans)
+    await db.execute(
+        delete(CallLog).where(CallLog.campaign_id == campaign_id)
+    )
     await db.delete(campaign)
     await db.commit()
+
+    # Clean up Redis
+    from app.core.redis import redis_client
+    await redis_client.delete(f"campaign_active:{campaign_id}")
+
     return {"status": "deleted"}
+
 
 @router.get("/{campaign_id}/metrics")
 async def get_campaign_metrics(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
@@ -113,13 +210,13 @@ async def get_campaign_metrics(campaign_id: UUID, db: AsyncSession = Depends(get
     camp = result.scalar_one_or_none()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
-        
+
     conversion_rate = 0
     if camp.answered_count > 0:
         conversion_rate = round((camp.transferred_count / camp.answered_count) * 100, 1)
 
     return {
-        "status": camp.status,
+        "status": camp.status.value if hasattr(camp.status, 'value') else camp.status,
         "total": camp.total_contacts,
         "dialed": camp.dialed_count,
         "answered": camp.answered_count,
@@ -134,7 +231,7 @@ async def get_campaign_metrics(campaign_id: UUID, db: AsyncSession = Depends(get
 async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     """
     AMD performance analytics for a campaign.
-    
+
     Returns classification breakdown, average decision latency,
     which AMD layer made decisions, and campaign mode distribution.
     """
@@ -143,13 +240,13 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     camp = result.scalar_one_or_none()
     if not camp:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
+
     # Total calls for this campaign
     total_result = await db.execute(
         select(func.count(CallLog.id)).where(CallLog.campaign_id == campaign_id)
     )
     total_calls = total_result.scalar() or 0
-    
+
     if total_calls == 0:
         return {
             "total_calls": 0,
@@ -160,7 +257,7 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
             "layer_breakdown": {"mod_amd": 0, "whisper": 0, "timeout": 0},
             "mode_breakdown": {"A": 0, "B": 0, "C": 0},
         }
-    
+
     # AMD result breakdown
     human_result = await db.execute(
         select(func.count(CallLog.id))
@@ -168,16 +265,16 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
         .where(CallLog.amd_result == "human")
     )
     human_count = human_result.scalar() or 0
-    
+
     machine_result = await db.execute(
         select(func.count(CallLog.id))
         .where(CallLog.campaign_id == campaign_id)
         .where(CallLog.amd_result == "machine")
     )
     machine_count = machine_result.scalar() or 0
-    
+
     unknown_count = total_calls - human_count - machine_count
-    
+
     # Average decision time (only for calls that have AMD telemetry)
     avg_ms_result = await db.execute(
         select(func.avg(CallLog.amd_decision_ms))
@@ -185,7 +282,7 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
         .where(CallLog.amd_decision_ms.isnot(None))
     )
     avg_decision_ms = int(avg_ms_result.scalar() or 0)
-    
+
     # Layer breakdown
     layer_breakdown = {"mod_amd": 0, "whisper": 0, "timeout": 0}
     for layer_name in ["mod_amd", "whisper", "timeout"]:
@@ -195,12 +292,12 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
             .where(CallLog.amd_layer == layer_name)
         )
         layer_breakdown[layer_name] = layer_result.scalar() or 0
-    
+
     # Mode breakdown (from campaign, not per-call — but useful for the response)
     mode_breakdown = {"A": 0, "B": 0, "C": 0}
     current_mode = camp.campaign_mode.value if camp.campaign_mode else "A"
     mode_breakdown[current_mode] = total_calls
-    
+
     return {
         "total_calls": total_calls,
         "human_pct": round((human_count / total_calls) * 100, 1) if total_calls else 0.0,

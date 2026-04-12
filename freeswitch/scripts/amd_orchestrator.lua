@@ -42,9 +42,34 @@
 local WHISPER_WS_HOST = "whisper-amd"
 local WHISPER_WS_PORT = 8080
 
--- Maximum time to wait for mod_amd to produce a result before timing out.
--- After this, we classify as UNKNOWN and apply campaign_mode logic.
-local AMD_TIMEOUT_SEC = 8.0  -- seconds
+-- ── mod_amd parameter defaults ───────────────────────────────────────────────
+-- These are passed EXPLICITLY to session:execute("amd", params) so we never
+-- rely on the FS build's compiled defaults (which may have unbounded timeouts).
+--
+-- total_analysis_time  — HARD CEILING on how long mod_amd blocks (ms).
+--                        Without this, mod_amd can hang indefinitely on
+--                        unusual audio (silent voicemail, one-way RTP, etc.)
+-- initial_silence      — Max silence at call start before MACHINE verdict.
+--                        2500ms catches voicemail systems that answer with silence.
+-- greeting             — Max greeting duration before MACHINE (ms).
+-- after_greeting_silence — Silence after greeting to confirm end of speech (ms).
+-- min_word_length       — Min duration of speech to count as a word (ms).
+-- between_words_silence — Silence between words to count as a break (ms).
+-- maximum_number_of_words — Max words before MACHINE (voicemail = many words).
+-- maximum_word_length   — Max single word duration before MACHINE (ms).
+-- silence_threshold     — Energy threshold for silence detection (0-65535).
+
+local amd_params = {
+    silence_threshold       = 256,
+    initial_silence         = 2500,
+    greeting                = 1500,
+    after_greeting_silence  = 800,
+    total_analysis_time     = 5000,
+    min_word_length          = 100,
+    between_words_silence   = 50,
+    maximum_number_of_words = 3,
+    maximum_word_length     = 5000,
+}
 
 -- ── Safety: verify session is alive ──────────────────────────────────────────
 
@@ -71,6 +96,7 @@ freeswitch.consoleLog("INFO",
 -- ── Per-Campaign AMD Config Override ─────────────────────────────────────────
 -- The dialer injects a JSON blob as the amd_config channel variable.
 -- Parse it and override local thresholds if present.
+-- Any key matching an amd_params field is applied directly.
 
 local amd_config_raw = session:getVariable("amd_config") or ""
 if amd_config_raw ~= "" then
@@ -86,14 +112,29 @@ if amd_config_raw ~= "" then
     end)
 
     if ok and config then
-        if config.amd_timeout_sec then
-            AMD_TIMEOUT_SEC = config.amd_timeout_sec
-            freeswitch.consoleLog("INFO",
-                "[AMD] Override: AMD_TIMEOUT_SEC=" .. AMD_TIMEOUT_SEC .. "\n")
+        -- Apply per-campaign overrides to mod_amd parameters
+        for key, value in pairs(config) do
+            if amd_params[key] ~= nil then
+                amd_params[key] = value
+                freeswitch.consoleLog("INFO",
+                    "[AMD] Override: " .. key .. "=" .. value .. "\n")
+            end
         end
         freeswitch.consoleLog("INFO", "[AMD] Per-campaign config applied for " .. uuid .. "\n")
     end
 end
+
+-- ── Build mod_amd parameter string ───────────────────────────────────────────
+local amd_params_str = ""
+for key, value in pairs(amd_params) do
+    if amd_params_str ~= "" then
+        amd_params_str = amd_params_str .. " "
+    end
+    amd_params_str = amd_params_str .. key .. "=" .. tostring(value)
+end
+
+freeswitch.consoleLog("INFO",
+    "[AMD] mod_amd params: " .. amd_params_str .. "\n")
 
 -- ── Silent Audio Priming (Industry Best Practice) ────────────────────────────
 -- Play 250ms of silence BEFORE starting mod_amd. This ensures:
@@ -120,11 +161,33 @@ end
 
 -- ── Layer 1: Start mod_amd (heuristic detection) ─────────────────────────────
 -- mod_amd runs synchronously — it blocks this Lua script until it reaches
--- a classification (HUMAN, MACHINE, or NOTSURE) or times out.
+-- a classification (HUMAN, MACHINE, or NOTSURE) or its total_analysis_time
+-- ceiling is hit, whichever comes first.
+--
+-- CRITICAL: mod_amd's total_analysis_time is FRAME-BASED, not wall-clock.
+-- If no RTP audio arrives (dead media path, flight mode, one-way audio),
+-- the frame counter never increments and the timeout NEVER fires.
+-- We use sched_api + uuid_break as a WALL-CLOCK safety net to forcibly
+-- interrupt mod_amd if it hasn't returned after 6 real seconds.
+--
 -- The result is set as channel variables: amd_result, amd_cause
 
+local amd_wall_timeout = 6  -- wall-clock seconds (1s padding over total_analysis_time)
+local sched_group = "amd_timeout_" .. uuid
+
 if session:ready() then
-    session:execute("amd")
+    -- Schedule a wall-clock interrupt BEFORE starting mod_amd
+    local api = freeswitch.API()
+    api:executeString("sched_api +" .. amd_wall_timeout .. " " .. sched_group .. " uuid_break " .. uuid .. " all")
+    freeswitch.consoleLog("INFO",
+        "[AMD] Scheduled wall-clock safety timeout (" .. amd_wall_timeout .. "s) for " .. uuid .. "\n")
+
+    -- This BLOCKS until mod_amd returns OR uuid_break interrupts it
+    session:execute("amd", amd_params_str)
+
+    -- Cancel the scheduled break (mod_amd returned normally within timeout)
+    api:executeString("sched_del " .. sched_group)
+    freeswitch.consoleLog("INFO", "[AMD] mod_amd returned, cancelled safety timeout for " .. uuid .. "\n")
 end
 
 -- ── Safety check after mod_amd returns ───────────────────────────────────────

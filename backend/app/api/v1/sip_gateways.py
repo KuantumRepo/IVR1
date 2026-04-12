@@ -17,14 +17,21 @@ def generate_freeswitch_xml(gateway: SipGateway) -> str:
     password_param = f'<param name="password" value="{gateway.sip_password}"/>' if gateway.sip_password else ''
     username_param = f'<param name="username" value="{gateway.sip_username}"/>' if gateway.sip_username else ''
     
+    # IP-authenticated trunks must NOT register — the provider authenticates
+    # by source IP. Sending REGISTER to an IP-auth trunk causes the 904
+    # "no matching challenge" error because the provider doesn't issue a
+    # SIP challenge at all.
+    register = "false" if gateway.auth_type.value == "IP_BASED" else "true"
+    
     return f"""<include>
   <gateway name="{str(gateway.id)}">
     <param name="realm" value="{gateway.sip_server}"/>
     {username_param}
     {password_param}
-    <param name="register" value="true" />
+    <param name="register" value="{register}" />
     <param name="caller-id-in-from" value="true"/>
     <param name="ping" value="25" />
+    <param name="dtmf-type" value="rfc2833"/>
   </gateway>
 </include>
 """
@@ -63,8 +70,16 @@ async def delete_gateway(gateway_id: UUID, db: AsyncSession = Depends(get_db)):
     await db.delete(gateway)
     await db.commit()
     
+    # Remove the XML file from disk so it doesn't resurrect on FS restart
+    import os
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    workspace_dir = os.path.dirname(backend_dir)
+    xml_path = os.path.join(workspace_dir, "freeswitch", "conf", "sip_profiles", "external", f"{gateway_id}.xml")
+    if os.path.exists(xml_path):
+        os.remove(xml_path)
+    
     # Send kill command to FreeSWITCH to instantly unregister the trunk
-    await esl_manager.bgapi(f"sofia profile external killgw {str(gateway.id)}")
+    await esl_manager.bgapi(f"sofia profile external killgw {str(gateway_id)}")
         
     return {"status": "deleted", "id": gateway_id}
     

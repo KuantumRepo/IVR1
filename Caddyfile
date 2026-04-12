@@ -3,9 +3,7 @@
     # admin off
 }
 
-# The block without a specific domain acts as a catch-all or localhost
-# In production, replace `localhost` with your actual domain (e.g., app.domain.com)
-:80, :443 {
+{$DOMAIN_NAME:localhost} {
     # Reverse proxy WebSocket and API requests to the Python backend
     handle_path /api/* {
         rewrite * /api{path}
@@ -20,7 +18,4 @@
     handle {
         reverse_proxy frontend:3000
     }
-
-    # Enable automatic HTTPS (Caddy will generate a self-signed cert for localhost)
-    tls internal
 }

@@ -139,3 +139,22 @@ export EXT_RTP_IP=203.0.113.50
 # Deploy everything
 docker compose --profile full-stack up -d
 ```
+
+
+### 🧪 Testing Full-Stack Locally
+
+If you want to bring the whole stack up locally (including Caddy, Frontend, Backend), run it with the `--build` flag and profile tag:
+
+```bash
+docker compose --profile full-stack up --build -d
+```
+
+*(Note: Without the `--profile full-stack` flag, Docker compose only boots FreeSWITCH, Redis, Postgres, and the Whisper-AMD sidecar locally, assuming you'll run `npm run dev` and `uvicorn` for hot-reloading).*
+
+### 🌐 Accessing the Local Full-Stack
+
+Once the `full-stack` profile is running, Caddy acts as a unified reverse proxy locally across ports 80/443:
+
+- **Frontend UI**: Navigate to `http://localhost` or `https://localhost` (you can safely bypass your browser's local self-signed certificate warning).
+- **Backend API Docs**: Navigate to `http://localhost/api/docs`
+- **Agent SIP Phones**: Connect directly to your local IP on port `5060`.

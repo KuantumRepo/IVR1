@@ -1,7 +1,7 @@
 from pydantic import BaseModel, ConfigDict
 from typing import Optional, List
 from uuid import UUID
-from datetime import datetime, time
+from datetime import datetime
 from app.models.core import CampaignStatus, CampaignMode
 
 class CampaignBase(BaseModel):
@@ -13,17 +13,12 @@ class CampaignBase(BaseModel):
     ring_timeout_sec: int = 30
     retry_attempts: int = 0
     retry_delay_min: int = 60
-    
-    call_window_start: Optional[time] = None
-    call_window_end: Optional[time] = None
-    timezone: str = "America/New_York"
-    respect_local_tz: bool = False
-    
+
     enable_amd: bool = True
     hangup_on_voicemail: bool = True
     enable_vm_drop: bool = False
     use_legacy_dtmf: bool = False
-    
+
     # AMD behavior mode: A (hangup on machine), B (VM drop after beep), C (conservative)
     campaign_mode: str = "A"
     # Audio file ID for voicemail drop (Mode B only)
@@ -32,8 +27,8 @@ class CampaignBase(BaseModel):
 class CampaignCreate(CampaignBase):
     list_ids: List[UUID]
     gateway_ids: List[UUID]
-    caller_id_ids: List[UUID]
-    agent_ids: List[UUID]
+    caller_id_ids: List[UUID] = []
+    agent_ids: List[UUID] = []
 
 class CampaignResponse(CampaignBase):
     id: UUID

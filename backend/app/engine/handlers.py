@@ -26,6 +26,19 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# ─── Industry-standard retryable SIP hangup causes ───────────────────────────
+# Only these causes justify a retry — everything else is a permanent failure
+# and should NOT be retried (saves SIP minutes and respects carrier limits).
+RETRYABLE_SIP_CAUSES = frozenset({
+    'NO_USER_RESPONSE',            # Ring timeout — network reachable but no pickup
+    'USER_BUSY',                   # Busy signal — temporary unavailability
+    'NO_ANSWER',                   # Confirmed ring, no answer
+    'RECOVERY_ON_TIMER_EXPIRE',    # Carrier-side timeout — transient
+    'NORMAL_TEMPORARY_FAILURE',    # Carrier transient error (503)
+    'DESTINATION_OUT_OF_ORDER',    # Temporary network issue
+    'ORIGINATOR_CANCEL',           # Our side cancelled (e.g. campaign paused mid-ring)
+})
+
 # Grab the Consumer instance so we can decorate handlers on it
 _consumer = esl_manager.consumer
 
@@ -407,7 +420,7 @@ async def on_channel_hangup(event):
 async def on_hangup(event):
     queue_id    = event.get("variable_dial_queue_id")
     campaign_id = event.get("variable_campaign_id")
-    # FIX #2: capture phone from the ESL event BEFORE any try/except
+    # Capture phone from the ESL event BEFORE any try/except
     # so the variable is available in the publish block regardless of exceptions.
     phone_number = (
         event.get("variable_contact_phone")
@@ -415,34 +428,52 @@ async def on_hangup(event):
         or "Unknown"
     )
 
+    cause = event.get("variable_hangup_cause", "UNKNOWN")
+    logger.info(f"Hangup uuid={event.get('Unique-ID')} cause={cause} queue_id={queue_id}")
+
+    # Publish disconnect trace BEFORE the queue_id guard so test calls
+    # (which have no dial_queue_id) still get the "Call Disconnected" message.
+    await log_test_trace(event, "NETWORK", f"Call Disconnected. Cause: {cause}")
+
     if not queue_id:
         return
 
-    cause = event.get("variable_hangup_cause", "UNKNOWN")
-    logger.info(f"Hangup queue_id={queue_id} cause={cause}")
-    
-    await log_test_trace(event, "NETWORK", f"Call Disconnected. Cause: {cause}")
-    
-    # Release capacity to the system instantaneously
+    # Release capacity to the system instantaneously (async + floor clamp)
     if campaign_id:
-        current_val = redis_client.decr(f"campaign_active:{campaign_id}")
-        if current_val < 0:
-            redis_client.set(f"campaign_active:{campaign_id}", 0)
+        current_val = await redis_client.decr(f"campaign_active:{campaign_id}")
+        if current_val is not None and int(current_val) < 0:
+            await redis_client.set(f"campaign_active:{campaign_id}", 0)
 
     async with AsyncSessionLocal() as db:
         try:
             q_item = await db.get(DialQueue, UUID(queue_id))
-            if q_item and campaign_id:
-                camp = await db.get(Campaign, UUID(campaign_id))
+            camp = await db.get(Campaign, UUID(campaign_id)) if campaign_id else None
 
+            # ── Update campaign counters ──────────────────────────────────
+            # dialed_count: incremented here (at network disposition time)
+            # rather than at originate dispatch time — only counts calls
+            # that actually reached the SIP network.
+            if camp:
+                camp.dialed_count += 1
+
+                # Determine if this was a failure (non-normal, non-answer disposition)
+                is_answered = cause == 'NORMAL_CLEARING'
+                is_retryable = cause in RETRYABLE_SIP_CAUSES
+                is_permanent_failure = not is_answered and not is_retryable
+
+                if is_permanent_failure:
+                    camp.failed_count += 1
+
+            # ── Retry or remove from queue ────────────────────────────────
+            if q_item and camp:
                 if (
-                    camp
-                    and cause != "NORMAL_CLEARING"
+                    cause in RETRYABLE_SIP_CAUSES
                     and q_item.retry_count < camp.retry_attempts
                 ):
                     logger.info(
                         f"Rescheduling {q_item.phone_number} "
-                        f"(attempt {q_item.retry_count + 1}/{camp.retry_attempts})"
+                        f"(attempt {q_item.retry_count + 1}/{camp.retry_attempts}, "
+                        f"cause={cause})"
                     )
                     q_item.retry_count += 1
                     q_item.next_attempt_at = datetime.now(timezone.utc) + timedelta(
@@ -450,16 +481,17 @@ async def on_hangup(event):
                     )
                     q_item.locked_by = None
                     q_item.locked_at = None
-                    await db.commit()
                 else:
                     await db.delete(q_item)
-                    await db.commit()
-                    
-            # Insert Call Details Record with AMD telemetry
+            elif q_item:
+                # No campaign ref — just remove the orphan queue item
+                await db.delete(q_item)
+
+            # ── Insert Call Details Record with AMD telemetry ─────────────
             duration = int(event.get("variable_billsec", 0))
             amd_result = event.get("variable_amd_result", "UNKNOWN")
             contact_id = event.get("variable_contact_id")
-            
+
             # AMD telemetry from amd_orchestrator.lua channel variables
             amd_layer = event.get("variable_amd_layer")
             amd_decision_ms_raw = event.get("variable_amd_decision_ms")
@@ -470,7 +502,7 @@ async def on_hangup(event):
             # Restore spaces from underscore encoding (Lua channel var safety)
             if amd_transcript:
                 amd_transcript = amd_transcript.replace("_", " ")
-            
+
             call_log = CallLog(
                 campaign_id=UUID(campaign_id) if campaign_id else None,
                 contact_id=UUID(contact_id) if contact_id else None,
@@ -491,10 +523,20 @@ async def on_hangup(event):
 
         # Always publish dashboard event — even if db ops failed
         try:
+            # Try to grab campaign name from cache, fallback to unknown
+            from app.core.redis import redis_client
+            camp_json = await redis_client.get(f"campaign_active:{campaign_id}")
+            camp_name = "Unknown Campaign"
+            if camp_json:
+                camp_data = json.loads(camp_json)
+                camp_name = camp_data.get("name", "Unknown Campaign")
+
             payload = {
                 "event":        "CALL_ENDED",
                 "phone_number": phone_number,
                 "cause":        cause,
+                "campaign_id":  campaign_id,
+                "campaign_name": camp_name,
                 "timestamp":    datetime.now(timezone.utc).isoformat(),
             }
             await publish_event("dashboard_events", json.dumps(payload))
@@ -559,6 +601,11 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = Fals
 
     import os
     fs_prompt_path = f"/audio/{os.path.basename(prompt_path)}"
+
+    # Enable inband DTMF detection as fallback — some carriers strip RFC2833
+    # telephone-event packets from the RTP stream.  start_dtmf listens for
+    # DTMF tones in the audio itself, making us carrier-agnostic.
+    await esl_manager.execute(uuid, "start_dtmf", "")
 
     # play_and_get_digits args: min max tries timeout terminators file invalid_file var_name regexp
     app_arg = f"1 1 3 5000 # {fs_prompt_path} silence_stream://250 digit_rx {regex}"

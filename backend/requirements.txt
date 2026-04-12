@@ -9,6 +9,7 @@ pydantic-settings
 websockets
 alembic
 pandas
+phonenumbers
 genesis
 # TTS (lightweight ONNX-only, no PyTorch needed)
 kokoro-onnx

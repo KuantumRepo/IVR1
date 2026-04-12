@@ -1,0 +1,11 @@
+<include>
+  <gateway name="28b193fe-76b8-4172-8e18-e924b86e6b88">
+    <param name="realm" value="rdx.narayana.im"/>
+    <param name="username" value="93302"/>
+    <param name="password" value="CanadaIsGreat@123"/>
+    <param name="register" value="true" />
+    <param name="caller-id-in-from" value="true"/>
+    <param name="ping" value="25" />
+    <param name="dtmf-type" value="rfc2833"/>
+  </gateway>
+</include>

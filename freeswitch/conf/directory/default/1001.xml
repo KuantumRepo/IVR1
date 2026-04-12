@@ -1,19 +1,19 @@
 <include>
   <user id="1001">
     <params>
-      <param name="password" value="plsBRjXjuImmSNL7_uMOvQ"/>
+      <param name="password" value="LBm4t44ersaYbyI_o-dNrg"/>
       <param name="vm-password" value="1001"/>
     </params>
     <variables>
       <variable name="toll_allow" value="domestic,international,local"/>
       <variable name="accountcode" value="1001"/>
       <variable name="user_context" value="default"/>
-      <variable name="effective_caller_id_name" value="Test"/>
+      <variable name="effective_caller_id_name" value="1"/>
       <variable name="effective_caller_id_number" value="1001"/>
       <variable name="outbound_caller_id_name" value="$${outbound_caller_name}"/>
       <variable name="outbound_caller_id_number" value="$${outbound_caller_id}"/>
       <variable name="callgroup" value="agents"/>
-      <variable name="agent_id" value="7193a634-adde-4a76-9a44-677daa7f8507"/>
+      <variable name="agent_id" value="0912436a-c47c-4d74-914c-a28970b8bf40"/>
     </variables>
   </user>
 </include>

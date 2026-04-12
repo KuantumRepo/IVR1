@@ -239,7 +239,8 @@ COPY --from=builder /usr/local/freeswitch /usr/local/freeswitch
 # Copy locally-built shared libraries (Sofia-SIP, SpanDSP, LibKS, SignalWire-C)
 # These MUST be present at runtime for modules to load.
 COPY --from=builder /usr/lib/libsofia-sip-ua*.so* /usr/lib/
-COPY --from=builder /usr/lib/*/libspandsp*.so* /usr/lib/
+# SpanDSP installs to /usr/lib/ directly (not multiarch subdir) with --prefix=/usr
+COPY --from=builder /usr/lib/libspandsp*.so* /usr/lib/
 COPY --from=builder /usr/lib/libks*.so* /usr/lib/
 COPY --from=builder /usr/lib/libsignalwire_client*.so* /usr/lib/
 
@@ -267,7 +268,7 @@ RUN mkdir -p /var/run/freeswitch /var/lib/freeswitch && \
 #   - Drops privileges via gosu → freeswitch user
 #   - Supports /docker-entrypoint.d/*.sh hook scripts
 COPY docker-entrypoint.sh /docker-entrypoint.sh
-RUN chmod +x /docker-entrypoint.sh
+RUN sed -i 's/\r$//' /docker-entrypoint.sh && chmod +x /docker-entrypoint.sh
 
 # Healthcheck verifies core status and that AMD modules are loaded.
 # Matches official pattern: fs_cli -x status | grep -q ^UP

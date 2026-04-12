@@ -49,6 +49,7 @@ services:
       FS_SIP_PORT: ${FS_SIP_PORT:-5060}
       WHISPER_AMD_WS_URL: ws://whisper-amd:8080/ws/amd
       AUDIO_DIR: /audio
+      FS_CONF_DIR: /usr/local/freeswitch/etc/freeswitch
     volumes:
       - shared_audio:/audio
       - shared_csv:/csv

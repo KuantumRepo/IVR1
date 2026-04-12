@@ -72,9 +72,8 @@ async def delete_gateway(gateway_id: UUID, db: AsyncSession = Depends(get_db)):
     
     # Remove the XML file from disk so it doesn't resurrect on FS restart
     import os
-    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    workspace_dir = os.path.dirname(backend_dir)
-    xml_path = os.path.join(workspace_dir, "freeswitch", "conf", "sip_profiles", "external", f"{gateway_id}.xml")
+    from app.core.config import settings
+    xml_path = os.path.join(settings.FS_CONF_DIR, "sip_profiles", "external", f"{gateway_id}.xml")
     if os.path.exists(xml_path):
         os.remove(xml_path)
     

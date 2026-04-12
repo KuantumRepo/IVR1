@@ -367,9 +367,8 @@ class ESLManager:
 
     async def push_gateway_xml(self, xml_content: str, filename: str):
         import os
-        backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        workspace_dir = os.path.dirname(backend_dir)
-        filepath = os.path.join(workspace_dir, "freeswitch", "conf", "sip_profiles", "external", filename)
+        from app.core.config import settings
+        filepath = os.path.join(settings.FS_CONF_DIR, "sip_profiles", "external", filename)
 
         try:
             os.makedirs(os.path.dirname(filepath), exist_ok=True)

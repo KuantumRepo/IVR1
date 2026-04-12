@@ -158,3 +158,15 @@ Once the `full-stack` profile is running, Caddy acts as a unified reverse proxy 
 - **Frontend UI**: Navigate to `http://localhost` or `https://localhost` (you can safely bypass your browser's local self-signed certificate warning).
 - **Backend API Docs**: Navigate to `http://localhost/api/docs`
 - **Agent SIP Phones**: Connect directly to your local IP on port `5060`.
+
+
+
+
+if you get backend  booting problems runnign locally when you run fastapi and frontedn locally andn rredis postsgres and freeswith are running in docker 
+use this command for db migration
+
+I just ran the command for you locally:
+
+powershell
+.\venv\Scripts\alembic upgrade head
+This successfully ran all the migration files and properly scaffolded the schema inside the new Docker Named Volume. Your backend will now boot perfectly! You can run your python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload command again safely.

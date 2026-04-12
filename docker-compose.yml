@@ -11,8 +11,8 @@ services:
       - DOMAIN_NAME=${DOMAIN_NAME:-localhost}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./data/caddy_data:/data
-      - ./data/caddy_config:/config
+      - caddy_data:/data
+      - caddy_config:/config
     depends_on:
       - frontend
       - backend
@@ -74,7 +74,7 @@ services:
       - "8080:8080"
     volumes:
       # Cache the downloaded Whisper model across container rebuilds
-      - ./data/whisper-models:/root/.cache/huggingface
+      - whisper_models:/root/.cache/huggingface
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/healthz"]
       interval: 30s
@@ -99,7 +99,7 @@ services:
       POSTGRES_USER: broadcaster
       POSTGRES_PASSWORD: ${DB_PASSWORD:-broadcaster_secret}
     volumes:
-      - ./data/postgres:/var/lib/postgresql/data
+      - postgres_data:/var/lib/postgresql/data
     restart: unless-stopped
 
   redis:
@@ -131,6 +131,8 @@ services:
       WHISPER_AMD_WS_URL: ws://whisper-amd:8080/ws/amd
       # Audio shared volume path (inside Docker)
       AUDIO_DIR: /audio
+      # FreeSWITCH conf shared volume path (inside Docker)
+      FS_CONF_DIR: /usr/local/freeswitch/etc/freeswitch
     volumes:
       - ./data/audio:/audio
       - ./data/csv:/csv
@@ -155,3 +157,9 @@ services:
     depends_on:
       - backend
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+  whisper_models:
+  caddy_data:
+  caddy_config:

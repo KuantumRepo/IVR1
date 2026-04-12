@@ -1,0 +1,11 @@
+<include>
+  <gateway name="77a21c8e-4451-4067-a58b-36ed02029c25">
+    <param name="realm" value="sip2sip.info"/>
+    <param name="username" value="watsonclaier33"/>
+    <param name="password" value="Canada@123"/>
+    <param name="register" value="true" />
+    <param name="caller-id-in-from" value="true"/>
+    <param name="ping" value="25" />
+    <param name="dtmf-type" value="rfc2833"/>
+  </gateway>
+</include>

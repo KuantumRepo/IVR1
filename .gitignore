@@ -35,16 +35,8 @@ pnpm-debug.log*
 # =========================
 # DATA (runtime / volumes)
 # =========================
-# Ignore everything inside data
-data/*
-
-# Keep folder structure
-!data/.gitkeep
-!data/audio/.gitkeep
-!data/csv/.gitkeep
-
-# NEVER commit postgres database files
-data/postgres/
+# Ignore data folder completely (replaced by Docker Named Volumes)
+data/
 
 # =========================
 # FreeSWITCH

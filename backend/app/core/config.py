@@ -1,4 +1,10 @@
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_core_dir = os.path.dirname(os.path.abspath(__file__))
+_app_dir = os.path.dirname(_core_dir)
+_backend_dir = os.path.dirname(_app_dir)
+_workspace_dir = os.path.dirname(_backend_dir)
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Broadcaster"
@@ -28,6 +34,9 @@ class Settings(BaseSettings):
     # Local dev: relative path to the bind-mounted data/audio directory
     # Docker prod: /audio (absolute path inside the container)
     AUDIO_DIR: str = "./data/audio"
+    
+    # FreeSWITCH conf directory (where sip profiles are written)
+    FS_CONF_DIR: str = os.path.join(_workspace_dir, "freeswitch", "conf")
     
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding='utf-8', extra="ignore")
 

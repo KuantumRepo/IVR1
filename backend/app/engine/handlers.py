@@ -602,10 +602,24 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = Fals
     import os
     fs_prompt_path = f"/audio/{os.path.basename(prompt_path)}"
 
-    # Enable inband DTMF detection as fallback — some carriers strip RFC2833
-    # telephone-event packets from the RTP stream.  start_dtmf listens for
-    # DTMF tones in the audio itself, making us carrier-agnostic.
-    await esl_manager.execute(uuid, "start_dtmf", "")
+    # Check the carrier's SDP to intelligently toggle inband DTMF
+    # If the carrier SDP explicitly advertises RFC2833 support (telephone-event),
+    # we DO NOT start inband detection to prevent "Double Detection" (receiving "11" for 1).
+    try:
+        sdp_raw = await esl_manager.api(f"uuid_getvar {uuid} switch_r_sdp")
+        # uuid_getvar returns "_undef_" if not set
+        sdp = str(sdp_raw).lower() if sdp_raw else ""
+        has_rfc2833 = "telephone-event" in sdp
+    except Exception as e:
+        logger.warning(f"Failed to fetch SDP on {uuid}: {e}")
+        has_rfc2833 = False
+
+    if not has_rfc2833:
+        logger.info(f"Carrier SDP on {uuid} lacks telephone-event. Engaging in-band start_dtmf.")
+        # Enable inband DTMF detection as fallback
+        await esl_manager.execute(uuid, "start_dtmf", "")
+    else:
+        logger.info(f"Carrier natively supports RFC2833 on {uuid}. Trusting liberal-dtmf (no inband).")
 
     # play_and_get_digits args: min max tries timeout terminators file invalid_file var_name regexp
     app_arg = f"1 1 3 5000 # {fs_prompt_path} silence_stream://250 digit_rx {regex}"

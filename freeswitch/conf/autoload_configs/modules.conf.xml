@@ -59,5 +59,10 @@
     <!-- mod_avmd: Layer 3 beep detector (built into FreeSWITCH) -->
     <load module="mod_avmd"/>
 
+    <!-- mod_spandsp: Industrial DSP — in-band DTMF detection (Goertzel),
+         tone generation, fax. Provides spandsp_start_dtmf which is the
+         carrier-immune DTMF detector used by all production PBX systems. -->
+    <load module="mod_spandsp"/>
+
   </modules>
 </configuration>

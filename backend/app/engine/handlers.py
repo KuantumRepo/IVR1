@@ -602,9 +602,14 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = Fals
     import os
     fs_prompt_path = f"/audio/{os.path.basename(prompt_path)}"
 
-    # Native DTMF Normalization
-    # 1. Engage native audio listener for lying carriers
-    await esl_manager.execute(uuid, "start_dtmf", "")
+    # ── Carrier-Immune DTMF Normalization ──────────────────────────────────
+    # 1. Engage SpanDSP in-band audio detector for carrier-immune DTMF.
+    #    spandsp_start_dtmf uses the industrial SpanDSP Goertzel algorithm
+    #    which reliably detects DTMF even through codec transcoding, SBC
+    #    mangling, and carriers that strip RFC2833 telephone-event.
+    #    CRITICAL: Do NOT also enable start_dtmf — running two detectors
+    #    simultaneously causes double-detection feedback loops.
+    await esl_manager.execute(uuid, "spandsp_start_dtmf", "")
     
     # 2. Flush the channel buffer to instantly destroy lingering inputs from previous menus
     await esl_manager.execute(uuid, "flush_dtmf", "")

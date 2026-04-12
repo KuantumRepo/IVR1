@@ -40,6 +40,7 @@ async def generate_gateway_xml(gateway: SipGateway):
         xml_content += '    <param name="retry-seconds" value="30"/>\n'
         xml_content += '    <param name="ping" value="25"/>\n'
         xml_content += '    <param name="dtmf-type" value="rfc2833"/>\n'
+        xml_content += '    <param name="caller-id-in-from" value="true"/>\n'
         
         xml_content += """  </gateway>
 </include>

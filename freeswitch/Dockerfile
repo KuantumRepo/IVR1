@@ -96,10 +96,13 @@ RUN ./bootstrap.sh && \
 
 # ── 3. Build SpanDSP ────────────────────────────────────────────────────────
 # DSP toolkit required by mod_spandsp (G.711 codec support, fax, tone detect).
-# Flag from official example: --with-pic
-RUN git clone --depth 1 https://github.com/freeswitch/spandsp.git /usr/src/libs/spandsp
+# CRITICAL: Must use commit 0d2e6ac — the latest master has breaking API changes
+# (renamed V18_MODE constants, changed v18_init signature) that are incompatible
+# with FreeSWITCH v1.10's mod_spandsp source code.
+RUN git clone https://github.com/freeswitch/spandsp.git /usr/src/libs/spandsp
 WORKDIR /usr/src/libs/spandsp
-RUN ./bootstrap.sh && \
+RUN git checkout 0d2e6ac && \
+    ./bootstrap.sh && \
     ./configure CFLAGS="-g -ggdb" \
       --with-pic \
       --prefix=/usr && \
@@ -172,6 +175,10 @@ say/mod_say_en
 
 # AMD — Built-in voicemail beep detector
 applications/mod_avmd
+
+# SpanDSP — Industrial in-band DTMF detection (Goertzel algorithm),
+# tone generation, fax. Provides spandsp_start_dtmf for carrier-immune DTMF.
+applications/mod_spandsp
 MODULES_EOF
 
 # Bootstrap and configure (matches official example pattern)
@@ -182,6 +189,7 @@ RUN make install
 
 # Install default sound files (en-us-callie 8kHz — IVR prompts, hold music)
 RUN make cd-sounds-install cd-moh-install 2>/dev/null || true
+
 
 # ── 7. Build mod_amd ────────────────────────────────────────────────────────
 # seanbright/mod_amd — open-source port of Asterisk's app_amd for FreeSWITCH.

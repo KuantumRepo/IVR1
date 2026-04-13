@@ -38,7 +38,7 @@ if [ "$1" = 'freeswitch' ]; then
     chown -R freeswitch:freeswitch "${FS_PREFIX}/run" 2>/dev/null || true
     chown -R freeswitch:freeswitch "${FS_PREFIX}/db" 2>/dev/null || true
 
-    # ── Inject external IP from environment ──────────────────────────────────
+    # ── Inject external IP and Password from environment ──────────────────────
     # vars.xml defaults to stun:stun.freeswitch.org for public IP discovery.
     # In production, we override with the deterministic IP from .env to avoid
     # STUN latency, boot delays, and incorrect resolution behind NAT.
@@ -52,6 +52,14 @@ if [ "$1" = 'freeswitch' ]; then
         if [ -n "$EXT_SIP_IP" ] && [ "$EXT_SIP_IP" != "stun:stun.freeswitch.org" ]; then
             sed -i "s|external_sip_ip=stun:stun.freeswitch.org|external_sip_ip=${EXT_SIP_IP}|g" "$VARS_FILE"
             echo "Injected external_sip_ip=${EXT_SIP_IP}"
+        fi
+    fi
+
+    ESL_CONF_FILE="${FS_PREFIX}/etc/freeswitch/autoload_configs/event_socket.conf.xml"
+    if [ -f "$ESL_CONF_FILE" ]; then
+        if [ -n "$FS_ESL_PASSWORD" ]; then
+            sed -i -E "s|<param name=\"password\" value=\"[^\"]+\"/>|<param name=\"password\" value=\"${FS_ESL_PASSWORD}\"/>|g" "$ESL_CONF_FILE"
+            echo "Injected FS_ESL_PASSWORD into event_socket.conf.xml"
         fi
     fi
 

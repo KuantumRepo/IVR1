@@ -90,6 +90,7 @@ services:
       - EXT_SIP_IP=${EXT_SIP_IP:-stun:stun.freeswitch.org}
       - SOUND_RATES=8000:16000
       - SOUND_TYPES=music:en-us-callie
+      - FS_ESL_PASSWORD=${FS_ESL_PASSWORD}
     cap_add:
       - SYS_NICE
       - NET_ADMIN

@@ -31,6 +31,7 @@ services:
       # Enable native FreeSWITCH sound packs (hold music, IVR prompts, ring tones)
       - SOUND_RATES=8000:16000
       - SOUND_TYPES=music:en-us-callie
+      - FS_ESL_PASSWORD=${FS_ESL_PASSWORD:-ClueCon}
     # No 'ports:' block — host networking exposes all ports directly.
     # FS listens on: 8021 (ESL), 5060 (internal SIP), 5080 (external SIP),
     # 16384-32768 (RTP media)

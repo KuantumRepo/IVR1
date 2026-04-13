@@ -237,6 +237,16 @@ else
     warn "vars.xml not found at ${VARS_FILE} — skipping. FreeSWITCH will use STUN."
 fi
 
+ESL_CONF_FILE="freeswitch/conf/autoload_configs/event_socket.conf.xml"
+if [ -f "$ESL_CONF_FILE" ]; then
+    if grep -q "<param name=\"password\"" "$ESL_CONF_FILE"; then
+        sed -i -E "s|<param name=\"password\" value=\"[^\"]+\"/>|<param name=\"password\" value=\"${ESL_PASSWORD}\"/>|g" "$ESL_CONF_FILE"
+        success "Injected ESL password into event_socket.conf.xml"
+    fi
+else
+    warn "event_socket.conf.xml not found at ${ESL_CONF_FILE} — ESL password not set."
+fi
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 3: Configure Firewall
 # ═══════════════════════════════════════════════════════════════════════════════

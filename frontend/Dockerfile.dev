@@ -1,0 +1,19 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml* package-lock.json* yarn.lock* ./
+
+# Install dependencies based on the preferred package manager
+RUN \
+  if [ -f pnpm-lock.yaml ]; then corepack enable pnpm && pnpm install; \
+  elif [ -f yarn.lock ]; then yarn install; \
+  elif [ -f package-lock.json ]; then npm ci; \
+  else npm install; \
+  fi
+
+COPY . .
+
+# Expose port and run dev server
+EXPOSE 3000
+CMD ["npm", "run", "dev"]

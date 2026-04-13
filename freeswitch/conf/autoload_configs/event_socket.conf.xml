@@ -5,7 +5,7 @@
     <param name="listen-port" value="8021"/>
     <param name="password" value="ClueCon"/>
     <!-- Allow Docker host bridge IPs (172.x.x.x) - safe because port is localhost-only and password-protected -->
-    <!-- <param name="apply-inbound-acl" value="0.0.0.0/0"/> -->
+    <param name="apply-inbound-acl" value="any"/>
     <!--<param name="stop-on-bind-error" value="false"/>-->
   </settings>
 </configuration>

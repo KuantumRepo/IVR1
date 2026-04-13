@@ -395,7 +395,7 @@ info "FreeSWITCH module checks:"
 FS_CONTAINER=$($COMPOSE ps -q freeswitch 2>/dev/null)
 if [ -n "$FS_CONTAINER" ]; then
     # Check ext-rtp-ip
-    FS_EXT_IP=$(docker exec "$FS_CONTAINER" fs_cli -p "$FS_ESL_PASSWORD" -x 'eval $${external_rtp_ip}' 2>/dev/null || echo "UNKNOWN")
+    FS_EXT_IP=$(docker exec "$FS_CONTAINER" fs_cli -p "$ESL_PASSWORD" -x 'eval $${external_rtp_ip}' 2>/dev/null || echo "UNKNOWN")
     if [ "$FS_EXT_IP" = "$PUBLIC_IP" ]; then
         success "external_rtp_ip = $FS_EXT_IP (matches VPS public IP)"
     else
@@ -403,7 +403,7 @@ if [ -n "$FS_CONTAINER" ]; then
     fi
 
     # Check mod_spandsp
-    SPANDSP=$(docker exec "$FS_CONTAINER" fs_cli -p "$FS_ESL_PASSWORD" -x 'module_exists mod_spandsp' 2>/dev/null || echo "false")
+    SPANDSP=$(docker exec "$FS_CONTAINER" fs_cli -p "$ESL_PASSWORD" -x 'module_exists mod_spandsp' 2>/dev/null || echo "false")
     if [ "$SPANDSP" = "true" ]; then
         success "mod_spandsp loaded"
     else
@@ -411,7 +411,7 @@ if [ -n "$FS_CONTAINER" ]; then
     fi
 
     # Check mod_amd
-    AMD=$(docker exec "$FS_CONTAINER" fs_cli -p "$FS_ESL_PASSWORD" -x 'module_exists mod_amd' 2>/dev/null || echo "false")
+    AMD=$(docker exec "$FS_CONTAINER" fs_cli -p "$ESL_PASSWORD" -x 'module_exists mod_amd' 2>/dev/null || echo "false")
     if [ "$AMD" = "true" ]; then
         success "mod_amd loaded"
     else
@@ -419,7 +419,7 @@ if [ -n "$FS_CONTAINER" ]; then
     fi
 
     # Check Sofia status
-    SOFIA=$(docker exec "$FS_CONTAINER" fs_cli -p "$FS_ESL_PASSWORD" -x 'sofia status' 2>/dev/null | grep -c "RUNNING" || true)
+    SOFIA=$(docker exec "$FS_CONTAINER" fs_cli -p "$ESL_PASSWORD" -x 'sofia status' 2>/dev/null | grep -c "RUNNING" || true)
     SOFIA=${SOFIA:-0}
     if [ "$SOFIA" -gt 0 ]; then
         success "Sofia SIP profiles running ($SOFIA profiles)"

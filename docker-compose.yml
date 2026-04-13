@@ -132,7 +132,7 @@ services:
       # (the backend is on bridge network, FS is on host network)
       FS_ESL_HOST: host.docker.internal
       FS_ESL_PORT: 8021
-      FS_ESL_PASSWORD: ${ESL_PASSWORD:-ClueCon}
+      FS_ESL_PASSWORD: ${FS_ESL_PASSWORD:-ClueCon}
       # Public-facing SIP domain for agent softphone registration
       # Set FS_SIP_DOMAIN to your server's public IP or domain
       FS_SIP_DOMAIN: ${FS_SIP_DOMAIN:-127.0.0.1}

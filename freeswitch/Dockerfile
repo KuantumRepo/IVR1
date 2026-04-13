@@ -158,6 +158,9 @@ applications/mod_esf
 # Dialplan
 dialplans/mod_dialplan_xml
 
+# Databases
+databases/mod_pgsql
+
 # Scripting Languages
 languages/mod_lua
 

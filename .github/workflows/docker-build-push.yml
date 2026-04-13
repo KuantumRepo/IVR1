@@ -1,0 +1,74 @@
+name: Build and Push Docker Images
+
+on:
+  push:
+    branches:
+      - main
+  # Allow manual trigger from the GitHub Actions UI
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      # If one build fails (e.g., whitespace error in python), don't kill the other 3
+      fail-fast: false
+      matrix:
+        include:
+          - context: ./backend
+            image: broadcaster-backend
+          - context: ./frontend
+            image: broadcaster-frontend
+          - context: ./freeswitch
+            image: broadcaster-freeswitch
+          - context: ./whisper-amd
+            image: broadcaster-whisper-amd
+    
+    # Required to push images to GHCR using GITHUB_TOKEN
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      # Docker image names must be entirely lowercase
+      - name: Downcase GitHub username
+        id: string
+        run: echo "username=${GITHUB_REPOSITORY_OWNER,,}" >> $GITHUB_OUTPUT
+
+      - name: Extract Docker metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ steps.string.outputs.username }}/${{ matrix.image }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=short
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # CRITICAL: Use GitHub Actions cache. 
+          # FreeSWITCH takes 45 mins to compile from source. 
+          # GHA caching reduces rebuilds tracking identical source files down to ~1 minute.
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}

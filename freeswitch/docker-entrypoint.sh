@@ -38,6 +38,23 @@ if [ "$1" = 'freeswitch' ]; then
     chown -R freeswitch:freeswitch "${FS_PREFIX}/run" 2>/dev/null || true
     chown -R freeswitch:freeswitch "${FS_PREFIX}/db" 2>/dev/null || true
 
+    # ── Inject external IP from environment ──────────────────────────────────
+    # vars.xml defaults to stun:stun.freeswitch.org for public IP discovery.
+    # In production, we override with the deterministic IP from .env to avoid
+    # STUN latency, boot delays, and incorrect resolution behind NAT.
+    # The sed is idempotent — once replaced, the search string is gone.
+    VARS_FILE="${FS_PREFIX}/etc/freeswitch/vars.xml"
+    if [ -f "$VARS_FILE" ]; then
+        if [ -n "$EXT_RTP_IP" ] && [ "$EXT_RTP_IP" != "stun:stun.freeswitch.org" ]; then
+            sed -i "s|external_rtp_ip=stun:stun.freeswitch.org|external_rtp_ip=${EXT_RTP_IP}|g" "$VARS_FILE"
+            echo "Injected external_rtp_ip=${EXT_RTP_IP}"
+        fi
+        if [ -n "$EXT_SIP_IP" ] && [ "$EXT_SIP_IP" != "stun:stun.freeswitch.org" ]; then
+            sed -i "s|external_sip_ip=stun:stun.freeswitch.org|external_sip_ip=${EXT_SIP_IP}|g" "$VARS_FILE"
+            echo "Injected external_sip_ip=${EXT_SIP_IP}"
+        fi
+    fi
+
     # ── Run hook scripts ────────────────────────────────────────────────────
     # Drop any .sh files in /docker-entrypoint.d/ to run custom init logic
     # (e.g., generating gateway configs, setting environment-specific vars).

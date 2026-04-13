@@ -42,6 +42,17 @@ RETRYABLE_SIP_CAUSES = frozenset({
 # Grab the Consumer instance so we can decorate handlers on it
 _consumer = esl_manager.consumer
 
+#DEBUG
+@_consumer.handle("DTMF")
+async def on_dtmf_debug(event):
+    logger.warning(
+        f"[DTMF DEBUG] uuid={event.get('Unique-ID')} "
+        f"digit={event.get('DTMF-Digit')} "
+        f"source={event.get('DTMF-Source')} "
+        f"duration={event.get('DTMF-Duration')}"
+    )
+
+
 async def log_test_trace(event: dict, tag: str, detail: str):
     if event.get("variable_is_test_call") == "true":
         try:

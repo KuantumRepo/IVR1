@@ -326,7 +326,7 @@ else
     info "Depending on your VPS CPU, this will take 15-30 minutes."
     info "FreeSWITCH must compile from C++ source code."
     echo ""
-    docker compose -f $COMPOSE_FILE build
+    docker compose --profile full-stack -f $COMPOSE_FILE build
     success "All images built successfully."
 fi
 
@@ -344,7 +344,11 @@ if [ -f "docker-compose.override.yml" ]; then
 fi
 
 info "Starting all services..."
-docker compose -f $COMPOSE_FILE --env-file .env up -d
+if [ "$DEPLOY_METHOD" = "1" ]; then
+    docker compose --profile full-stack -f $COMPOSE_FILE --env-file .env up -d
+else
+    docker compose -f $COMPOSE_FILE --env-file .env up -d
+fi
 
 echo ""
 info "Waiting for services to initialize (30 seconds)..."
@@ -355,7 +359,11 @@ sleep 30
 # ═══════════════════════════════════════════════════════════════════════════════
 header "Phase 6/6 — Health Checks"
 
-COMPOSE="docker compose -f $COMPOSE_FILE"
+if [ "$DEPLOY_METHOD" = "1" ]; then
+    COMPOSE="docker compose --profile full-stack -f $COMPOSE_FILE"
+else
+    COMPOSE="docker compose -f $COMPOSE_FILE"
+fi
 ALL_HEALTHY=true
 
 # Check each service

@@ -52,7 +52,7 @@ services:
       - ./data/audio:/audio
     healthcheck:
       # Verify core status AND both AMD modules are loaded
-      test: ["CMD-SHELL", "fs_cli -x 'module_exists mod_amd' | grep -q true && fs_cli -x 'module_exists mod_avmd' | grep -q true && fs_cli -x 'status'"]
+      test: ["CMD-SHELL", "fs_cli -p $$FS_ESL_PASSWORD -x 'module_exists mod_amd' | grep -q true && fs_cli -p $$FS_ESL_PASSWORD -x 'module_exists mod_avmd' | grep -q true && fs_cli -p $$FS_ESL_PASSWORD -x 'status'"]
       interval: 15s
       timeout: 10s
       retries: 5

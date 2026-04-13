@@ -69,14 +69,6 @@ if ! docker compose version &> /dev/null; then
 fi
 success "Docker Compose found: $(docker compose version | head -1)"
 
-# Check docker-compose.prod.yml exists
-if [ ! -f "docker-compose.prod.yml" ]; then
-    error "docker-compose.prod.yml not found in the current directory."
-    echo "  Make sure you're running this script from the broadcaster/ project root."
-    exit 1
-fi
-success "Project files detected."
-
 # ── Detect Public IP ─────────────────────────────────────────────────────────
 divider
 info "Detecting your server's public IP address..."
@@ -115,13 +107,29 @@ read -p "$(echo -e "${BOLD}Domain name${NC} for the web UI (e.g., app.yourdomain
 DOMAIN_NAME=${DOMAIN_NAME:-$PUBLIC_IP}
 success "Domain: $DOMAIN_NAME"
 
-# --- GitHub Container Registry ---
+# --- Deployment Method ---
 echo ""
-info "Container images are pulled from GitHub Container Registry (ghcr.io)."
-while [ -z "$GH_USER" ]; do
-    read -p "$(echo -e "${BOLD}GitHub username or org${NC} (image owner): ")" GH_USER
-done
-success "Registry: ghcr.io/$GH_USER"
+info "How do you want to deploy the Docker containers?"
+echo "  1) Build locally from source (Bypasses GHCR free-tier limits, takes ~20 mins)"
+echo "  2) Pull pre-built images from GHCR (Fast, requires working GitHub Actions)"
+read -p "$(echo -e "${BOLD}Select method (1/2)${NC} [1]: ")" DEPLOY_METHOD
+DEPLOY_METHOD=${DEPLOY_METHOD:-1}
+
+if [ "$DEPLOY_METHOD" = "1" ]; then
+    COMPOSE_FILE="docker-compose.yml"
+    success "Method: Build locally ($COMPOSE_FILE)"
+else
+    COMPOSE_FILE="docker-compose.prod.yml"
+    success "Method: Pull from GHCR ($COMPOSE_FILE)"
+
+    # --- GitHub Container Registry ---
+    echo ""
+    info "Since you are pulling from GHCR, please provide your GitHub username."
+    while [ -z "$GH_USER" ]; do
+        read -p "$(echo -e "${BOLD}GitHub username or org${NC} (image owner): ")" GH_USER
+    done
+    success "Registry: ghcr.io/$GH_USER"
+fi
 
 # --- ESL Password ---
 echo ""
@@ -147,7 +155,7 @@ header "Configuration Summary"
 
 echo -e "  ${BOLD}Public IP:${NC}       $PUBLIC_IP"
 echo -e "  ${BOLD}Domain:${NC}          $DOMAIN_NAME"
-echo -e "  ${BOLD}Registry:${NC}        ghcr.io/$GH_USER"
+echo -e "  ${BOLD}Compose File:${NC}    $COMPOSE_FILE"
 echo -e "  ${BOLD}ESL Password:${NC}    ${ESL_PASSWORD:0:4}****"
 echo -e "  ${BOLD}DB Password:${NC}     ${DB_PASSWORD:0:4}****"
 echo ""
@@ -180,9 +188,13 @@ DOMAIN_NAME=$DOMAIN_NAME
 
 # ── Database ──────────────────────────────────────────────────────────────────
 DB_PASSWORD=$DB_PASSWORD
+DATABASE_URL=postgresql+asyncpg://broadcaster:${DB_PASSWORD}@postgres/broadcaster
+REDIS_URL=redis://redis:6379
 
 # ── FreeSWITCH ESL ────────────────────────────────────────────────────────────
 FS_ESL_PASSWORD=$ESL_PASSWORD
+FS_ESL_HOST=freeswitch
+FS_ESL_PORT=8021
 
 # ── FreeSWITCH SIP (public-facing) ───────────────────────────────────────────
 # This is the IP/domain agents use to register their softphones.
@@ -270,59 +282,60 @@ info "Firewall rules:"
 ufw status numbered 2>/dev/null | head -20
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PHASE 4: Configure Container Registry & Pull Images
+# PHASE 4: Container Images
 # ═══════════════════════════════════════════════════════════════════════════════
-header "Phase 4/6 — Container Registry Setup"
+header "Phase 4/6 — Container Images"
 
-# Update image references in docker-compose.prod.yml
-if grep -q "your-username" docker-compose.prod.yml; then
-    sed -i "s/your-username/${GH_USER}/g" docker-compose.prod.yml
-    success "Updated docker-compose.prod.yml with ghcr.io/${GH_USER}"
-else
-    info "docker-compose.prod.yml already has custom registry."
-fi
-
-# GHCR authentication
-echo ""
-info "If your container images are private, you need to log in to GHCR."
-read -p "$(echo -e "${BOLD}Log in to ghcr.io now?${NC} [Y/n]: ")" DO_LOGIN
-DO_LOGIN=${DO_LOGIN:-Y}
-
-if [[ "$DO_LOGIN" =~ ^[Yy]$ ]]; then
-    echo ""
-    info "You'll need a GitHub Personal Access Token (PAT) with read:packages scope."
-    info "Create one at: https://github.com/settings/tokens/new"
-    echo ""
-    read -p "$(echo -e "${BOLD}GitHub PAT:${NC} ")" -s GH_TOKEN
-    echo ""
-
-    if [ -n "$GH_TOKEN" ]; then
-        echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
-        if [ $? -eq 0 ]; then
-            success "Authenticated with ghcr.io"
-        else
-            error "Failed to authenticate. You can retry manually:"
-            echo "  docker login ghcr.io -u $GH_USER"
-        fi
-    else
-        warn "No token provided. Skipping login."
+if [ "$DEPLOY_METHOD" = "2" ]; then
+    # Pull images from GHCR
+    if grep -q "your-username" docker-compose.prod.yml; then
+        sed -i "s/your-username/${GH_USER}/g" docker-compose.prod.yml
+        success "Updated docker-compose.prod.yml with ghcr.io/${GH_USER}"
     fi
-else
-    info "Skipping GHCR login. Make sure images are public or you're already authenticated."
-fi
 
-# Pull images
-echo ""
-info "Pulling container images... (this may take a few minutes)"
-docker compose -f docker-compose.prod.yml pull
-success "All images pulled."
+    # GHCR authentication
+    echo ""
+    info "If your container images are private, you need to log in to GHCR."
+    read -p "$(echo -e "${BOLD}Log in to ghcr.io now?${NC} [Y/n]: ")" DO_LOGIN
+    DO_LOGIN=${DO_LOGIN:-Y}
+
+    if [[ "$DO_LOGIN" =~ ^[Yy]$ ]]; then
+        echo ""
+        info "You'll need a GitHub Personal Access Token (PAT) with read:packages scope."
+        read -p "$(echo -e "${BOLD}GitHub PAT:${NC} ")" -s GH_TOKEN
+        echo ""
+
+        if [ -n "$GH_TOKEN" ]; then
+            echo "$GH_TOKEN" | docker login ghcr.io -u "$GH_USER" --password-stdin
+            if [ $? -eq 0 ]; then
+                success "Authenticated with ghcr.io"
+            else
+                error "Failed to authenticate."
+            fi
+        fi
+    fi
+
+    echo ""
+    info "Pulling container images... (this may take a few minutes)"
+    docker compose -f $COMPOSE_FILE pull
+    success "All images pulled."
+else
+    # Build images locally
+    echo ""
+    info "Building images locally from source..."
+    info "Depending on your VPS CPU, this will take 15-30 minutes."
+    info "FreeSWITCH must compile from C++ source code."
+    echo ""
+    docker compose -f $COMPOSE_FILE build
+    success "All images built successfully."
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 5: Start the Stack
 # ═══════════════════════════════════════════════════════════════════════════════
 header "Phase 5/6 — Starting Production Stack"
 
-# Ensure no override file interferes with production
+# Ensure no override file interferes
 if [ -f "docker-compose.override.yml" ]; then
     warn "docker-compose.override.yml detected — this is a dev-only file."
     warn "Renaming to docker-compose.override.yml.dev to prevent interference."
@@ -331,7 +344,7 @@ if [ -f "docker-compose.override.yml" ]; then
 fi
 
 info "Starting all services..."
-docker compose -f docker-compose.prod.yml --env-file .env up -d
+docker compose -f $COMPOSE_FILE --env-file .env up -d
 
 echo ""
 info "Waiting for services to initialize (30 seconds)..."
@@ -342,7 +355,7 @@ sleep 30
 # ═══════════════════════════════════════════════════════════════════════════════
 header "Phase 6/6 — Health Checks"
 
-COMPOSE="docker compose -f docker-compose.prod.yml"
+COMPOSE="docker compose -f $COMPOSE_FILE"
 ALL_HEALTHY=true
 
 # Check each service
@@ -419,12 +432,10 @@ divider
 echo ""
 echo -e "  ${BOLD}Useful commands:${NC}"
 echo ""
-echo -e "  View logs:      docker compose -f docker-compose.prod.yml logs -f"
-echo -e "  Restart:        docker compose -f docker-compose.prod.yml restart"
-echo -e "  Stop:           docker compose -f docker-compose.prod.yml down"
-echo -e "  Update images:  docker compose -f docker-compose.prod.yml pull && \\"
-echo -e "                  docker compose -f docker-compose.prod.yml up -d"
-echo -e "  FS console:     docker exec -it \$(docker compose -f docker-compose.prod.yml ps -q freeswitch) fs_cli"
+echo -e "  View logs:      docker compose -f $COMPOSE_FILE logs -f"
+echo -e "  Restart:        docker compose -f $COMPOSE_FILE restart"
+echo -e "  Stop:           docker compose -f $COMPOSE_FILE down"
+echo -e "  FS console:     docker exec -it \$(docker compose -f $COMPOSE_FILE ps -q freeswitch) fs_cli"
 echo ""
 
 if [ "$DOMAIN_NAME" != "$PUBLIC_IP" ]; then

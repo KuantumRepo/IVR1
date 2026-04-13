@@ -26,12 +26,22 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U broadcaster -d broadcaster"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     restart: unless-stopped
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   backend:
     # Notice: NO build context here, pulls pre-built image
@@ -55,8 +65,10 @@ services:
       - shared_csv:/csv
       - ./freeswitch/conf:/usr/local/freeswitch/etc/freeswitch:rw
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   frontend:
     # Notice: NO build context here, pulls pre-built image

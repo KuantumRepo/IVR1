@@ -100,12 +100,22 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD:-broadcaster_secret}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U broadcaster -d broadcaster"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   backend:
@@ -139,9 +149,9 @@ services:
       - ./freeswitch/conf:/usr/local/freeswitch/etc/freeswitch:rw
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
       # NOTE: freeswitch runs on host network, so Docker healthcheck
       # cross-network dependency doesn't work. The ESL connection manager
       # in connection.py has auto-reconnect logic to handle startup ordering.

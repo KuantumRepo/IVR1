@@ -22,7 +22,7 @@ export default function GatewayTestWizard({ params }: { params: Promise<{ id: st
       addLog(`[GATEWAY] ${resolvedParams.id}`);
       
       try {
-          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1'}/sip-gateways/${resolvedParams.id}/test?target_number=${encodeURIComponent(phoneNumber)}`, {
+          const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways/${resolvedParams.id}/test?target_number=${encodeURIComponent(phoneNumber)}`, {
               method: 'POST'
           });
           

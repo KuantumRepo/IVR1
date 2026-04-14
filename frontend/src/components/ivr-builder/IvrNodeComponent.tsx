@@ -24,7 +24,7 @@ export function IvrNodeComponent({ data, isConnectable, selected }: NodeProps) {
 
     setPlaying(true);
     try {
-      const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api/v1';
+      const baseUrl = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
       let url = '';
 
       if (isAudioMode) {

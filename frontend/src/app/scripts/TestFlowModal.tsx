@@ -117,7 +117,7 @@ export default function TestFlowModal({ isOpen, onClose, scripts }: { isOpen: bo
   useEffect(() => {
     let ws: WebSocket;
     if (callStatus === 'calling') {
-        const HOST = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace('http', 'ws').replace('/api/v1', '') : 'ws://127.0.0.1:8000';
+        const HOST = process.env.NEXT_PUBLIC_API_URL ? process.env.NEXT_PUBLIC_API_URL.replace('http', 'ws').replace('/api/v1', '') : `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`;
         ws = new WebSocket(`${HOST}/ws/test-logs`);
         ws.onmessage = (event) => {
             try {

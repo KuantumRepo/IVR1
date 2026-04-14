@@ -151,7 +151,7 @@ export default function NewCampaignWizard() {
            payload.vm_drop_audio_id = formData.vm_drop_audio_id;
        }
        
-       const res = await fetch(API_URL + '/campaigns', {
+       const res = await fetch(API_URL + '/campaigns/', {
            method: 'POST',
            headers: { 'Content-Type': 'application/json' },
            body: JSON.stringify(payload)

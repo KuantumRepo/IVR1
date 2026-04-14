@@ -11,7 +11,7 @@ export default function CampaignsPage() {
 
   const fetchCampaigns = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/campaigns`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/campaigns/`);
       if (res.ok) {
         setCampaigns(await res.json());
       }

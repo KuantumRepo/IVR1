@@ -15,7 +15,7 @@ export default function GatewaysPage() {
 
   const fetchGateways = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways/`);
       if (res.ok) setGateways(await res.json());
     } catch (err) {
       console.error(err);
@@ -34,7 +34,7 @@ export default function GatewaysPage() {
     }
     
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 

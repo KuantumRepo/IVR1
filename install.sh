@@ -276,7 +276,12 @@ success "HTTP/HTTPS (80, 443/tcp)"
 # SIP — FreeSWITCH external profile
 ufw allow 5080/udp comment "FreeSWITCH SIP External" > /dev/null 2>&1
 ufw allow 5080/tcp comment "FreeSWITCH SIP External TCP" > /dev/null 2>&1
-success "SIP (5080/udp+tcp)"
+success "SIP External (5080/udp+tcp)"
+
+# SIP — FreeSWITCH internal profile (Agents/Softphones)
+ufw allow 5060/udp comment "FreeSWITCH SIP Internal" > /dev/null 2>&1
+ufw allow 5060/tcp comment "FreeSWITCH SIP Internal TCP" > /dev/null 2>&1
+success "SIP Internal (5060/udp+tcp)"
 
 # RTP — Voice media + DTMF (RFC 2833)
 # This is the critical rule — without it, PSTN carriers can't send audio/DTMF back.

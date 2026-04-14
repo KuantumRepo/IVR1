@@ -35,7 +35,7 @@ export default function AgentsPage() {
 
   const fetchAgents = useCallback(async () => {
     try {
-      const res = await fetch(`${API}/agents`);
+      const res = await fetch(`${API}/agents/`);
       if (res.ok) setAgents(await res.json());
     } catch (err) {
       console.error(err);
@@ -57,7 +57,7 @@ export default function AgentsPage() {
     }
 
     try {
-      const res = await fetch(`${API}/agents`, {
+      const res = await fetch(`${API}/agents/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

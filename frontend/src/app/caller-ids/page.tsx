@@ -11,7 +11,7 @@ export default function CallerIdsPage() {
 
   const fetchCallerIds = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/caller-ids`);
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/caller-ids/`);
       if (res.ok) setCallerIds(await res.json());
     } catch(e) {
       console.error(e);
@@ -32,7 +32,7 @@ export default function CallerIdsPage() {
     }
 
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/caller-ids`, {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/caller-ids/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: formData.name, phone_number: formData.num })

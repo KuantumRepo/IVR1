@@ -142,12 +142,31 @@ else
 fi
 
 # --- DB Password ---
-read -p "$(echo -e "${BOLD}Database password${NC} [auto-generate]: ")" DB_PASSWORD_INPUT
-if [ -n "$DB_PASSWORD_INPUT" ]; then
-    DB_PASSWORD="$DB_PASSWORD_INPUT"
+# CRITICAL: PostgreSQL only sets the password at first init (when the volume is
+# empty). If a postgres_data volume already exists, we MUST reuse the existing
+# password — otherwise the backend can't authenticate.
+EXISTING_DB_PW=""
+if docker volume inspect ivr1_postgres_data &>/dev/null || docker volume inspect postgres_data &>/dev/null; then
+    # Volume exists — try to read password from existing .env
+    if [ -f ".env" ]; then
+        EXISTING_DB_PW=$(grep '^DB_PASSWORD=' .env | cut -d'=' -f2)
+    elif [ -f ".env.backup" ]; then
+        EXISTING_DB_PW=$(grep '^DB_PASSWORD=' .env.backup | cut -d'=' -f2)
+    fi
+fi
+
+if [ -n "$EXISTING_DB_PW" ]; then
+    warn "Existing database detected — reusing current password to prevent auth mismatch."
+    info "To change the DB password, run: docker exec -it ivr1-postgres-1 psql -U broadcaster -c \"ALTER USER broadcaster WITH PASSWORD 'NEW_PW';\""
+    DB_PASSWORD="$EXISTING_DB_PW"
 else
-    DB_PASSWORD=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 24 | head -n 1)
-    info "Generated database password."
+    read -p "$(echo -e "${BOLD}Database password${NC} [auto-generate]: ")" DB_PASSWORD_INPUT
+    if [ -n "$DB_PASSWORD_INPUT" ]; then
+        DB_PASSWORD="$DB_PASSWORD_INPUT"
+    else
+        DB_PASSWORD=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 24 | head -n 1)
+        info "Generated database password."
+    fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────────────

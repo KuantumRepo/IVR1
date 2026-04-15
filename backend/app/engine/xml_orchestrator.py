@@ -7,7 +7,7 @@ from app.esl.connection import esl_manager
 logger = logging.getLogger(__name__)
 
 # Usually freeswitch/conf is mounted, but if we run locally we need to find it
-FS_CONF_DIR = Path("/etc/freeswitch") if os.path.exists("/.dockerenv") else Path("../freeswitch/conf")
+FS_CONF_DIR = Path(os.environ.get("FS_CONF_DIR", "/etc/freeswitch")) if os.path.exists("/.dockerenv") else Path("../freeswitch/conf")
 PROFILES_DIR = FS_CONF_DIR / "sip_profiles" / "external"
 DIRECTORY_DIR = FS_CONF_DIR / "directory" / "default"
 

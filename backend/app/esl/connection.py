@@ -184,13 +184,21 @@ class ESLManager:
 
         # Public reference for handler decorators
         self.consumer = self._consumer
-        self.connected = False
 
         # ── Execute Tracking (per-UUID async futures) ─────────────────────
         # Event-UUID → asyncio.Future — resolved by CHANNEL_EXECUTE_COMPLETE
         self._pending_executes: dict[str, asyncio.Future] = {}
         # Channel UUID → set of Event-UUIDs — for O(1) bulk cancel on hangup
         self._uuid_pending: dict[str, set[str]] = {}
+
+    @property
+    def connected(self) -> bool:
+        """Derive ESL connection status from actual pool slot health.
+
+        The Consumer's start() blocks while connected, so we can't set a flag
+        from within it. Instead, check if any pool slot has a live connection.
+        """
+        return any(slot.healthy for slot in self._pool._slots)
 
     async def start(self):
         """
@@ -221,12 +229,14 @@ class ESLManager:
         while True:
             try:
                 logger.info(f"Connecting ESL Consumer to FreeSWITCH at {self.host}:{self.port}...")
+                # Recreate the consumer on each attempt to avoid stale state
+                self._consumer = Consumer(self.host, self.port, self.password)
+                self.consumer = self._consumer
                 await self._consumer.start()
-                self.connected = True
             except Exception as e:
-                self.connected = False
                 logger.error(f"ESL Consumer disconnected: {e}. Retrying in 5s...")
                 await asyncio.sleep(5)
+
 
     # ── Command interface (unchanged signatures) ──────────────────────────
 

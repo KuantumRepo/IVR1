@@ -14,8 +14,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - frontend
-      - backend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
 
   freeswitch:
     build: ./freeswitch
@@ -28,6 +30,9 @@ services:
     environment:
       - EXT_RTP_IP=${EXT_RTP_IP:-stun:stun.freeswitch.org}
       - EXT_SIP_IP=${EXT_SIP_IP:-stun:stun.freeswitch.org}
+      # SIP domain — must be the public IP or FQDN for agent registration
+      # On AWS, local_ip_v4 resolves to the private IP which breaks SIP auth
+      - FS_SIP_DOMAIN=${FS_SIP_DOMAIN:-127.0.0.1}
       # Enable native FreeSWITCH sound packs (hold music, IVR prompts, ring tones)
       - SOUND_RATES=8000:16000
       - SOUND_TYPES=music:en-us-callie
@@ -156,6 +161,12 @@ services:
       # NOTE: freeswitch runs on host network, so Docker healthcheck
       # cross-network dependency doesn't work. The ESL connection manager
       # in connection.py has auto-reconnect logic to handle startup ordering.
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
     restart: unless-stopped
 
   frontend:
@@ -166,7 +177,8 @@ services:
     environment:
       INTERNAL_API_URL: http://backend:8000/api/v1
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

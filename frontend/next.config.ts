@@ -4,14 +4,8 @@ const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
   output: "standalone",
-  async rewrites() {
-    return [
-      {
-        source: "/api/v1/:path*",
-        destination: "http://127.0.0.1:8000/api/v1/:path*",
-      },
-    ];
-  },
+  // API routing handled by Caddy reverse proxy (prod) or docker-compose.override (dev).
+  // Do NOT add rewrites to 127.0.0.1 — they break in standalone Docker builds.
 };
 
 export default nextConfig;

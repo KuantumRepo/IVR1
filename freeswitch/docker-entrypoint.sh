@@ -53,6 +53,14 @@ if [ "$1" = 'freeswitch' ]; then
             sed -i "s|external_sip_ip=stun:stun.freeswitch.org|external_sip_ip=${EXT_SIP_IP}|g" "$VARS_FILE"
             echo "Injected external_sip_ip=${EXT_SIP_IP}"
         fi
+        # ── Set SIP domain to public IP ─────────────────────────────────────
+        # On AWS EC2, $${local_ip_v4} resolves to the private IP (172.31.x.x).
+        # Agent softphones register from external networks using the public IP,
+        # so the FS domain must match the public IP to find users in the directory.
+        if [ -n "$FS_SIP_DOMAIN" ] && [ "$FS_SIP_DOMAIN" != "127.0.0.1" ]; then
+            sed -i 's|data="domain=\$\${local_ip_v4}"|data="domain='"${FS_SIP_DOMAIN}"'"|g' "$VARS_FILE"
+            echo "Injected SIP domain=${FS_SIP_DOMAIN}"
+        fi
     fi
 
     ESL_CONF_FILE="${FS_PREFIX}/etc/freeswitch/autoload_configs/event_socket.conf.xml"

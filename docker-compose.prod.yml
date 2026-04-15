@@ -12,8 +12,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on:
-      - frontend
-      - backend
+      backend:
+        condition: service_healthy
+      frontend:
+        condition: service_started
 
   postgres:
     image: postgres:16-alpine
@@ -69,6 +71,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   frontend:
     # Notice: NO build context here, pulls pre-built image
@@ -77,7 +85,8 @@ services:
     environment:
       INTERNAL_API_URL: http://backend:8000/api/v1
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
   freeswitch:
     # Currently pointing to a dockerfile, but for true CI/CD this should also be an image.
@@ -88,6 +97,7 @@ services:
     environment:
       - EXT_RTP_IP=${EXT_RTP_IP:-stun:stun.freeswitch.org}
       - EXT_SIP_IP=${EXT_SIP_IP:-stun:stun.freeswitch.org}
+      - FS_SIP_DOMAIN=${FS_SIP_DOMAIN:-127.0.0.1}
       - SOUND_RATES=8000:16000
       - SOUND_TYPES=music:en-us-callie
       - FS_ESL_PASSWORD=${FS_ESL_PASSWORD}

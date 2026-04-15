@@ -724,6 +724,12 @@ async def on_execute_complete(event):
 
     logger.info(f"IVR digit '{digit}' on {uuid} (node {node_id})")
     await log_test_trace(event, "IVR", f"User processed digit '{digit}'")
+    
+    # CRITICAL: Always shut off the heavy in-band interceptor before moving to 
+    # the next phase. If the next phase is a TRANSFER to an agent, leaving this 
+    # running will permanently intercept/mangle bridge audio. If the next phase 
+    # is another PROMPT, the start command will be safely re-issued.
+    await esl_manager.execute(uuid, "spandsp_stop_dtmf", "")
 
     async with AsyncSessionLocal() as session:
         # Load node with routes + their response audio

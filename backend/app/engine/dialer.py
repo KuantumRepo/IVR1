@@ -165,7 +165,6 @@ class CampaignDialer:
             f"vm_drop_audio_id={vm_drop_id_val},"
             f"amd_config={amd_config_val},"
             f"ignore_early_media=true,"
-            f"absolute_codec_string=PCMU,"
             f"dtmf_type=rfc2833,"
             f"disable_video=true,"
             f"origination_caller_id_number={caller_id_number}}}"

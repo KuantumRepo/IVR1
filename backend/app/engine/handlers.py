@@ -39,11 +39,12 @@ RETRYABLE_SIP_CAUSES = frozenset({
     'ORIGINATOR_CANCEL',           # Our side cancelled (e.g. campaign paused mid-ring)
 })
 
-# Grab the Consumer instance so we can decorate handlers on it
-_consumer = esl_manager.consumer
+# ── Handler registration ──────────────────────────────────────────────────────
+# Uses esl_manager.register_handler() instead of @consumer.handle() decorators
+# so that handlers persist across ESL Consumer reconnects.
+# ──────────────────────────────────────────────────────────────────────────────
 
 #DEBUG
-@_consumer.handle("DTMF")
 async def on_dtmf_debug(event):
     logger.warning(
         f"[DTMF DEBUG] uuid={event.get('Unique-ID')} "
@@ -51,6 +52,7 @@ async def on_dtmf_debug(event):
         f"source={event.get('DTMF-Source')} "
         f"duration={event.get('DTMF-Duration')}"
     )
+esl_manager.register_handler("DTMF", on_dtmf_debug)
 
 
 async def log_test_trace(event: dict, tag: str, detail: str):
@@ -68,7 +70,6 @@ async def log_test_trace(event: dict, tag: str, detail: str):
 
 # ─── CHANNEL_ANSWER ───────────────────────────────────────────────────────────
 
-@_consumer.handle("CHANNEL_ANSWER")
 async def on_channel_answer(event):
     campaign_id = event.get("variable_campaign_id")
     if not campaign_id:
@@ -100,11 +101,11 @@ async def on_channel_answer(event):
                     await _start_human_playlist(uuid, camp, is_test=is_test)
         except Exception as e:
             logger.error(f"on_channel_answer error: {e}", exc_info=True)
+esl_manager.register_handler("CHANNEL_ANSWER", on_channel_answer)
 
 
 # ─── CUSTOM EVENTS (AMD + Agent Registration) ────────────────────────────────
 
-@_consumer.handle("CUSTOM")
 async def on_custom_event(event):
     subclass = event.get("Event-Subclass", "")
     
@@ -137,6 +138,7 @@ async def on_custom_event(event):
     if subclass == "avmd::beep":
         await _handle_avmd_beep(event)
         return
+esl_manager.register_handler("CUSTOM", on_custom_event)
 
 
 async def _handle_amd_result(event):
@@ -380,7 +382,6 @@ async def _handle_avmd_beep(event):
 
 # ─── CHANNEL_BRIDGE (MOD_CALLCENTER SCREEN POP) ───────────────────────────────
 
-@_consumer.handle("CHANNEL_BRIDGE")
 async def on_channel_bridge(event):
     cc_agent = event.get("variable_cc_agent")
     if not cc_agent:
@@ -408,11 +409,11 @@ async def on_channel_bridge(event):
                 logger.info(f"Published screen pop for Agent {agent.id}")
         except Exception as e:
             logger.error(f"Failed to lookup agent for screen pop: {e}", exc_info=True)
+esl_manager.register_handler("CHANNEL_BRIDGE", on_channel_bridge)
 
 
 # ─── CHANNEL_HANGUP (Future Cleanup) ───────────────────────────────────────────────────────
 
-@_consumer.handle("CHANNEL_HANGUP")
 async def on_channel_hangup(event):
     """Immediately cancel all pending execute futures for this channel.
 
@@ -423,11 +424,11 @@ async def on_channel_hangup(event):
     uuid = event.get("Unique-ID")
     if uuid:
         esl_manager.cancel_pending_for_uuid(uuid)
+esl_manager.register_handler("CHANNEL_HANGUP", on_channel_hangup)
 
 
 # ─── CHANNEL_HANGUP_COMPLETE ──────────────────────────────────────────────────────────────────
 
-@_consumer.handle("CHANNEL_HANGUP_COMPLETE")
 async def on_hangup(event):
     queue_id    = event.get("variable_dial_queue_id")
     campaign_id = event.get("variable_campaign_id")
@@ -553,6 +554,7 @@ async def on_hangup(event):
             await publish_event("dashboard_events", json.dumps(payload))
         except Exception as e:
             logger.error(f"on_hangup publish error: {e}", exc_info=True)
+esl_manager.register_handler("CHANNEL_HANGUP_COMPLETE", on_hangup)
 
 
 # ─── IVR ENGINE ───────────────────────────────────────────────────────────────
@@ -659,7 +661,6 @@ async def _start_human_playlist(uuid: str, campaign: Campaign, is_test: bool = F
 
 # ─── CHANNEL_EXECUTE_COMPLETE ─────────────────────────────────────────────────
 
-@_consumer.handle("CHANNEL_EXECUTE_COMPLETE")
 async def on_execute_complete(event):
     """
     Central execute-complete dispatcher.
@@ -829,6 +830,8 @@ async def on_execute_complete(event):
             
             is_test = event.get("variable_is_test_call") == "true"
             await _play_ivr_node(uuid, matched_route.target_node_id, session, is_test=is_test)
+
+esl_manager.register_handler("CHANNEL_EXECUTE_COMPLETE", on_execute_complete)
 
 
 # ─── EventHandler wrapper ─────────────────────────────────────────────────────

@@ -185,6 +185,12 @@ class ESLManager:
         # Public reference for handler decorators
         self.consumer = self._consumer
 
+        # ── Handler Registry (survives Consumer reconnects) ───────────────
+        # Stores (event_name, handler_fn) tuples. When the Consumer is
+        # recreated on reconnect, all handlers are replayed onto the new
+        # instance so event processing continues without interruption.
+        self._handler_registry: list[tuple[str, callable]] = []
+
         # ── Execute Tracking (per-UUID async futures) ─────────────────────
         # Event-UUID → asyncio.Future — resolved by CHANNEL_EXECUTE_COMPLETE
         self._pending_executes: dict[str, asyncio.Future] = {}
@@ -224,6 +230,17 @@ class ESLManager:
             except asyncio.CancelledError:
                 pass
 
+    def register_handler(self, event_name: str, handler):
+        """Register an event handler that survives Consumer reconnects.
+
+        The handler is stored in a persistent registry AND immediately
+        registered on the current Consumer instance.  On reconnect,
+        _run_consumer() replays the registry onto the new Consumer.
+        """
+        self._handler_registry.append((event_name, handler))
+        # Also register on the current (possibly initial) consumer
+        self._consumer.handle(event_name)(handler)
+
     async def _run_consumer(self):
         """Inner loop — Genesis Consumer.start() blocks until disconnected."""
         while True:
@@ -232,6 +249,10 @@ class ESLManager:
                 # Recreate the consumer on each attempt to avoid stale state
                 self._consumer = Consumer(self.host, self.port, self.password)
                 self.consumer = self._consumer
+                # Re-register ALL event handlers on the fresh Consumer
+                for event_name, handler in self._handler_registry:
+                    self._consumer.handle(event_name)(handler)
+                logger.info(f"Re-registered {len(self._handler_registry)} event handler(s) on new Consumer")
                 await self._consumer.start()
             except Exception as e:
                 logger.error(f"ESL Consumer disconnected: {e}. Retrying in 5s...")

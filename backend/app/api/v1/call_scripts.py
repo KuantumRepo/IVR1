@@ -267,6 +267,7 @@ async def test_call_script(request: TestCallRequest, db: AsyncSession = Depends(
         f"amd_config={amd_config_val},"
         f"is_test_call=true,"
         f"ignore_early_media=true,"
+        f"absolute_codec_string=PCMU,"
         f"dtmf_type=rfc2833,"
         f"disable_video=true,"
         f"origination_caller_id_number={caller_id_str}}}"

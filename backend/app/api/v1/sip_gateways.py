@@ -116,7 +116,7 @@ async def test_gateway(gateway_id: UUID, target_number: str, db: AsyncSession = 
         dial_string = f"sofia/gateway/{gateway.id}/{formatted_number}"
     
     # Put a strict 20s ring boundary, and loop the answer tone 3 times before auto-hanging up
-    cmd = f"originate {{originate_timeout=20,disable_video=true}}{dial_string} &playback(tone_stream://%(400,200,400,450);loops=3)"
+    cmd = f"originate {{originate_timeout=20,disable_video=true,absolute_codec_string=PCMU}}{dial_string} &playback(tone_stream://%(400,200,400,450);loops=3)"
     
     try:
         # Synchronous api call → returns actual result, not just "+OK Job-UUID"

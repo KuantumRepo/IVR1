@@ -535,13 +535,11 @@ async def on_hangup(event):
 
         # Always publish dashboard event — even if db ops failed
         try:
-            # Try to grab campaign name from cache, fallback to unknown
-            from app.core.redis import redis_client
-            camp_json = await redis_client.get(f"campaign_active:{campaign_id}")
-            camp_name = "Unknown Campaign"
-            if camp_json:
-                camp_data = json.loads(camp_json)
-                camp_name = camp_data.get("name", "Unknown Campaign")
+            # Use campaign name from the DB object fetched earlier in this handler.
+            # NOTE: Do NOT re-import redis_client here — a local import shadows
+            # the module-level import and causes UnboundLocalError on line 455,
+            # crashing the entire hangup pipeline.
+            camp_name = camp.name if camp else "Unknown Campaign"
 
             payload = {
                 "event":        "CALL_ENDED",

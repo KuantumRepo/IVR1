@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState, use, useCallback } from "react";
+import { useEffect, useState, use, useCallback, useRef } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
 import { Pause, Square, Activity, Play, ArrowLeft } from "lucide-react";
 import Link from "next/link";
+import { useWebSocket } from "@/providers/WebSocketProvider";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
@@ -29,6 +30,27 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
      failed: 0,
      conversion_rate: 0
   });
+
+  // ── Real-time call tracking from WebSocket ────────────────────────────
+  const { events } = useWebSocket();
+  const activeCalls = useRef(0);
+  const transferredCalls = useRef(0);
+
+  // Track live call counts from WebSocket events scoped to this campaign
+  useEffect(() => {
+    if (events.length === 0) return;
+    const latest = events[0]; // most recent event
+    if (!latest || latest.campaign_id !== resolvedParams.id) return;
+
+    if (latest.event === "CALL_STARTED") {
+      activeCalls.current = Math.max(0, activeCalls.current + 1);
+    } else if (latest.event === "CALL_ENDED") {
+      activeCalls.current = Math.max(0, activeCalls.current - 1);
+      if (latest.cause === "NORMAL_CLEARING") {
+        transferredCalls.current += 1;
+      }
+    }
+  }, [events, resolvedParams.id]);
 
   const fetchMetrics = useCallback(async () => {
     try {
@@ -60,22 +82,25 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
      return () => clearInterval(interval);
   }, [fetchMetrics]);
 
+  // Chart tick — reads actual WebSocket-driven counters instead of Math.random()
   useEffect(() => {
      const chartInterval = setInterval(() => {
          setData(prev => {
              const newArray = [...prev.slice(1)];
-             const baseConcurrency = stats.dialed > 0 && status === 'ACTIVE' ? Math.max(1, Math.floor(Math.random() * 5 + 5)) : 0;
+             const currentActive = activeCalls.current;
              newArray.push({
                  time: prev[prev.length - 1].time + 1,
-                 active: baseConcurrency,
-                 ringing: Math.floor(baseConcurrency * 0.4),
-                 transferred: Math.floor(baseConcurrency * 0.1),
+                 active: currentActive,
+                 ringing: Math.max(0, Math.floor(currentActive * 0.4)),
+                 transferred: transferredCalls.current,
              });
+             // Reset transferred counter each tick so the chart shows per-interval transfers
+             transferredCalls.current = 0;
              return newArray;
          });
      }, 2000);
      return () => clearInterval(chartInterval);
-  }, [stats.dialed, status]);
+  }, []);
 
   // ── Campaign Action Handlers ──────────────────────────────────────────────
   const handleAction = async (action: string) => {

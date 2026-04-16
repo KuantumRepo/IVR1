@@ -1,12 +1,40 @@
 import asyncio
+import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.redis import redis_client
 
 router = APIRouter()
 
+
+async def _get_total_active_calls() -> int:
+    """Sum all campaign_active:* counters from Redis."""
+    total = 0
+    try:
+        async for key in redis_client.scan_iter(match="campaign_active:*"):
+            val = await redis_client.get(key)
+            if val:
+                total += max(0, int(val))
+    except Exception:
+        pass
+    return total
+
+
 @router.websocket("/ws/dashboard")
 async def dashboard_websocket(websocket: WebSocket):
     await websocket.accept()
+
+    # Send initial sync so clients that connect mid-campaign get the
+    # true active call count instead of starting at 0.
+    try:
+        total_active = await _get_total_active_calls()
+        sync_payload = json.dumps({
+            "event": "DASHBOARD_SYNC",
+            "active_calls": total_active,
+        })
+        await websocket.send_json({"event": sync_payload})
+    except Exception as e:
+        print(f"WS initial sync error: {e}")
+
     pubsub = redis_client.pubsub()
     await pubsub.subscribe("dashboard_events")
     

@@ -9,6 +9,7 @@ from uuid import UUID
 from datetime import datetime, timezone
 
 from app.core.database import get_db
+from app.core.redis import redis_client
 from app.models.core import (
     Campaign, ContactList, SipGateway, CallerId, Agent,
     DialQueue, Contact, CallLog, CampaignStatus, campaign_contact_lists
@@ -126,6 +127,10 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     campaign.status = CampaignStatus.ACTIVE
     await db.commit()
 
+    # Explicitly initialize Redis concurrency counter to 0 so it
+    # doesn't rely on implicit None→0 fallback in the dialer loop.
+    await redis_client.set(f"campaign_active:{campaign_id}", 0)
+
     return {"status": "started", "queue_size": campaign.total_contacts}
 
 
@@ -172,7 +177,6 @@ async def stop_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     # Reset Redis active counter so it doesn't pollute future campaigns
-    from app.core.redis import redis_client
     await redis_client.set(f"campaign_active:{campaign_id}", 0)
 
     logger.info(f"Campaign {campaign_id} aborted — queue cleared")
@@ -198,7 +202,6 @@ async def delete_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db))
     await db.commit()
 
     # Clean up Redis
-    from app.core.redis import redis_client
     await redis_client.delete(f"campaign_active:{campaign_id}")
 
     return {"status": "deleted"}

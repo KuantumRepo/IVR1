@@ -9,6 +9,7 @@ export type WebSocketEvent = {
   phone_number?: string;
   timestamp?: string;
   cause?: string;
+  active_calls?: number;
 };
 
 interface DashboardStats {
@@ -79,7 +80,11 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
           // Push event onto the top of the stack, max 50 events
           setEvents(prev => [event, ...prev].slice(0, 50));
 
-          if (event.event === "CALL_STARTED") {
+          if (event.event === "DASHBOARD_SYNC") {
+            // Backend sends true active call count from Redis on connect
+            // so we don't start at 0 when joining mid-campaign.
+            setStats(prev => ({ ...prev, activeCalls: event.active_calls || 0 }));
+          } else if (event.event === "CALL_STARTED") {
             callsInCurrentSecond.current += 1;
             setStats(prev => ({ ...prev, activeCalls: prev.activeCalls + 1 }));
           } else if (event.event === "CALL_ENDED") {

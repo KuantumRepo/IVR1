@@ -2,9 +2,9 @@ import asyncio
 import json
 import logging
 from uuid import UUID
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from sqlalchemy.future import select
-from sqlalchemy import func, text
+from sqlalchemy import func, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -74,6 +74,26 @@ class CampaignDialer:
 
         now = datetime.now(timezone.utc)
 
+        # ── Stale Lock Reaper ─────────────────────────────────────────────
+        # If the backend crashed mid-campaign, rows with locked_by set and
+        # locked_at older than LOCK_EXPIRY are abandoned — unlock them so
+        # they re-enter the queue automatically without manual pause/resume.
+        LOCK_EXPIRY_SECONDS = 300  # 5 minutes
+        stale_cutoff = now - timedelta(seconds=LOCK_EXPIRY_SECONDS)
+        stale_result = await db.execute(
+            update(DialQueue)
+            .where(DialQueue.campaign_id == campaign.id)
+            .where(DialQueue.locked_by != None)  # noqa: E711
+            .where(DialQueue.locked_at < stale_cutoff)
+            .values(locked_by=None, locked_at=None)
+        )
+        if stale_result.rowcount > 0:
+            await db.commit()
+            logger.warning(
+                f"Reaped {stale_result.rowcount} stale locked queue item(s) "
+                f"for campaign {campaign.id}"
+            )
+
         # Atomic queue claim using FOR UPDATE SKIP LOCKED
         # This prevents double-dialing across concurrent ticks or workers
         result = await db.execute(
@@ -115,20 +135,14 @@ class CampaignDialer:
             # Lock the row — already protected by FOR UPDATE SKIP LOCKED
             item.locked_by = "engine_worker_1"
             item.locked_at = now
+            # Reserve the slot BEFORE originate to prevent the next tick
+            # from over-provisioning.  If originate fails, _initiate_call
+            # rolls back via DECR.
             await redis_client.incr(redis_key)
             await db.commit()
 
-            # Broadcast to web ui
-            payload = {
-                "event": "CALL_STARTED",
-                "campaign_id": str(campaign.id),
-                "campaign_name": campaign.name,
-                "phone_number": item.phone_number,
-                "timestamp": now.isoformat()
-            }
-            await publish_event("dashboard_events", json.dumps(payload))
-
-            # Non-blocking deployment of the originate payload
+            # CALL_STARTED is published inside _initiate_call AFTER
+            # confirmed originate dispatch — no more phantom events.
             asyncio.create_task(self._initiate_call(campaign, item))
 
     async def _initiate_call(self, campaign: Campaign, item: DialQueue):
@@ -179,6 +193,16 @@ class CampaignDialer:
             result = await esl_manager.bgapi(cmd)
             if result:
                 logger.info(f"Originate dispatched for {item.phone_number}")
+                # Publish CALL_STARTED only AFTER confirmed dispatch —
+                # prevents phantom events on the dashboard for failed originates.
+                payload = {
+                    "event": "CALL_STARTED",
+                    "campaign_id": str(campaign.id),
+                    "campaign_name": campaign.name,
+                    "phone_number": item.phone_number,
+                    "timestamp": datetime.now(timezone.utc).isoformat()
+                }
+                await publish_event("dashboard_events", json.dumps(payload))
         except Exception as e:
             logger.error(f"Failed to bridge originate call via ESL for {item.phone_number}: {e}")
             # Unlock the phantom lock instance (async, with floor clamping)

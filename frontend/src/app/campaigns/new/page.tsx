@@ -601,14 +601,14 @@ export default function NewCampaignWizard() {
             <div className="flex gap-3">
               <button 
                 onClick={() => handleSave(false)}
-                disabled={isSubmitting || !formData.script_id || formData.list_ids.length === 0}
+                disabled={isSubmitting || !formData.script_id || formData.list_ids.length === 0 || !formData.gateway_ids[0]}
                 className="px-6 py-2.5 rounded-lg font-medium transition-colors flex items-center gap-2 border border-white/10 text-white hover:bg-white/5 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                  <CheckCircle2 className="w-4 h-4" /> Create Draft
               </button>
               <button 
                 onClick={() => handleSave(true)}
-                disabled={isSubmitting || !formData.script_id || formData.list_ids.length === 0}
+                disabled={isSubmitting || !formData.script_id || formData.list_ids.length === 0 || !formData.gateway_ids[0]}
                 className="bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:bg-emerald-400 px-6 py-2.5 rounded-lg font-semibold transition-transform active:scale-95 flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                  {isSubmitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <PlayCircle className="w-4 h-4" />}

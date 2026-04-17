@@ -500,14 +500,14 @@ async def on_hangup(event):
                 await db.delete(q_item)
 
             # ── Insert Call Details Record with AMD telemetry ─────────────
-            duration = int(event.get("variable_billsec", 0))
+            duration = int(float(event.get("variable_billsec", 0)))
             amd_result = event.get("variable_amd_result", "UNKNOWN")
             contact_id = event.get("variable_contact_id")
 
             # AMD telemetry from amd_orchestrator.lua channel variables
             amd_layer = event.get("variable_amd_layer")
             amd_decision_ms_raw = event.get("variable_amd_decision_ms")
-            amd_decision_ms = int(amd_decision_ms_raw) if amd_decision_ms_raw else None
+            amd_decision_ms = int(float(amd_decision_ms_raw)) if amd_decision_ms_raw else None
             amd_confidence_raw = event.get("variable_amd_confidence")
             amd_confidence = float(amd_confidence_raw) if amd_confidence_raw else None
             amd_transcript = event.get("variable_amd_transcript")

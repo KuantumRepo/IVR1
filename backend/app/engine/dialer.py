@@ -188,25 +188,62 @@ class CampaignDialer:
         # Park immediately drops the answered call into the FS handling pool where Python catches the event
         cmd = f"originate {vars}{dial_string} &park()"
 
+        redis_key = f"campaign_active:{campaign.id}"
         try:
             # Genesis Inbound sends one-shot bgapi command without blocking the event loop
             result = await esl_manager.bgapi(cmd)
-            if result:
-                logger.info(f"Originate dispatched for {item.phone_number}")
-                # Publish CALL_STARTED only AFTER confirmed dispatch —
-                # prevents phantom events on the dashboard for failed originates.
-                payload = {
-                    "event": "CALL_STARTED",
-                    "campaign_id": str(campaign.id),
-                    "campaign_name": campaign.name,
-                    "phone_number": item.phone_number,
-                    "timestamp": datetime.now(timezone.utc).isoformat()
-                }
-                await publish_event("dashboard_events", json.dumps(payload))
+
+            # ── CRITICAL: Detect originate failures ─────────────────────────
+            # bgapi returns error TEXT (e.g. "-ERR USER_NOT_REGISTERED"), NOT
+            # a Python exception.  If we don't check, the Redis counter stays
+            # inflated (incr'd in _process_campaign) but never decr'd because
+            # FreeSWITCH never creates a channel → no CHANNEL_HANGUP_COMPLETE
+            # → counter permanently stuck → capacity=0 → dialer stalls.
+            result_str = str(result).strip() if result else ""
+            is_error = (
+                not result
+                or result_str.startswith("-ERR")
+                or "UNALLOCATED_NUMBER" in result_str
+                or "USER_NOT_REGISTERED" in result_str
+                or "NO_ROUTE_DESTINATION" in result_str
+                or "SUBSCRIBER_ABSENT" in result_str
+                or "NETWORK_OUT_OF_ORDER" in result_str
+            )
+
+            if is_error:
+                logger.error(
+                    f"Originate FAILED for {item.phone_number}: {result_str}"
+                )
+                # Roll back the Redis counter that was pre-incremented in
+                # _process_campaign — no channel exists to send a hangup.
+                current_val = await redis_client.decr(redis_key)
+                if current_val is not None and int(current_val) < 0:
+                    await redis_client.set(redis_key, 0)
+
+                # Unlock the queue item so it re-enters the pool.
+                # Don't delete it — the hangup handler normally cleans up,
+                # but no hangup will ever fire for a failed originate.
+                async with AsyncSessionLocal() as cleanup_db:
+                    q = await cleanup_db.get(DialQueue, item.id)
+                    if q:
+                        await cleanup_db.delete(q)
+                        await cleanup_db.commit()
+                return
+
+            logger.info(f"Originate dispatched for {item.phone_number}")
+            # Publish CALL_STARTED only AFTER confirmed dispatch —
+            # prevents phantom events on the dashboard for failed originates.
+            payload = {
+                "event": "CALL_STARTED",
+                "campaign_id": str(campaign.id),
+                "campaign_name": campaign.name,
+                "phone_number": item.phone_number,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            await publish_event("dashboard_events", json.dumps(payload))
         except Exception as e:
             logger.error(f"Failed to bridge originate call via ESL for {item.phone_number}: {e}")
             # Unlock the phantom lock instance (async, with floor clamping)
-            redis_key = f"campaign_active:{campaign.id}"
             current_val = await redis_client.decr(redis_key)
             if current_val is not None and int(current_val) < 0:
                 await redis_client.set(redis_key, 0)

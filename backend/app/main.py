@@ -4,6 +4,18 @@ import os
 import logging
 from contextlib import asynccontextmanager
 
+# ── CRITICAL: Configure root logger for ALL application modules ──────────────
+# Uvicorn's default LOGGING_CONFIG only adds handlers to "uvicorn.*" loggers.
+# Without this, application loggers (app.engine.dialer, app.engine.handlers,
+# app.esl.connection, etc.) have NO handler and silently drop ALL output below
+# WARNING via Python's lastResort stderr handler.  This made the entire dialer
+# engine, ESL connection lifecycle, and originate pipeline completely invisible.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 logger = logging.getLogger(__name__)
 
 async def _sync_agents_to_callcenter():

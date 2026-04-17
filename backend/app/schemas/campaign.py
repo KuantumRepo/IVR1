@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 from typing import Optional, List
 from uuid import UUID
 from datetime import datetime
@@ -29,6 +29,25 @@ class CampaignCreate(CampaignBase):
     gateway_ids: List[UUID]
     caller_id_ids: List[UUID] = []
     agent_ids: List[UUID] = []
+
+    @field_validator("gateway_ids", mode="before")
+    @classmethod
+    def reject_empty_gateways(cls, v):
+        """Prevent gateway-less campaigns that silently fail every originate.
+
+        Without a SIP gateway, the dialer builds 'sofia/external/+phone'
+        which FreeSWITCH interprets as a local user lookup → instant
+        USER_NOT_REGISTERED on every call.  Filter out empty strings
+        and reject if nothing remains.
+        """
+        if isinstance(v, list):
+            v = [item for item in v if item and str(item).strip()]
+        if not v:
+            raise ValueError(
+                "At least one SIP gateway is required. "
+                "Campaigns without a gateway cannot place outbound calls."
+            )
+        return v
 
 class CampaignResponse(CampaignBase):
     id: UUID

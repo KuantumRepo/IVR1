@@ -175,19 +175,7 @@ echo ""
 info "Setting up authentication (Username + Password + TOTP 2FA)..."
 echo ""
 
-# Install required Python packages for credential generation
-# These are needed on the HOST to hash passwords and generate TOTP secrets.
-# python3 ships with all modern Ubuntu/Debian. pip3 may need installing.
-if ! command -v pip3 &> /dev/null; then
-    info "Installing pip3..."
-    apt-get update -qq && apt-get install -y -qq python3-pip > /dev/null 2>&1
-fi
-info "Installing bcrypt and pyotp for credential generation..."
-pip3 install -q bcrypt pyotp 2>/dev/null || pip install -q bcrypt pyotp 2>/dev/null
-success "Auth dependencies ready."
-
 # --- Auth Username ---
-echo ""
 read -p "$(echo -e "${BOLD}Admin username${NC} [admin]: ")" AUTH_USERNAME_INPUT
 AUTH_USERNAME=${AUTH_USERNAME_INPUT:-admin}
 success "Username: $AUTH_USERNAME"
@@ -202,19 +190,42 @@ while [ -z "$AUTH_PASSWORD_INPUT" ]; do
     fi
 done
 
-# Hash the password with bcrypt
-AUTH_PASSWORD_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$AUTH_PASSWORD_INPUT', bcrypt.gensalt()).decode())")
-success "Password hashed with bcrypt."
+# --- Generate bcrypt hash + TOTP secret using a throwaway Docker container ---
+# Why Docker? Because:
+#   - Docker is already a hard prerequisite (checked at line 52)
+#   - Host Python may not have pip, bcrypt, or pyotp installed
+#   - PEP 668 (Ubuntu 22.04+) blocks pip install without --break-system-packages
+#   - A throwaway container guarantees it works on ANY Linux with Docker
+#   - Zero host pollution — nothing is installed on the system
+info "Generating credentials (pulling python:3-alpine if needed)..."
 
-# --- TOTP Secret (auto-generated) ---
-TOTP_SECRET=$(python3 -c "import pyotp; print(pyotp.random_base32())")
+AUTH_CREDS=$(echo "$AUTH_PASSWORD_INPUT" | docker run --rm -i python:3-alpine sh -c '
+pip install -q bcrypt pyotp 2>/dev/null
+python3 -c "
+import sys, bcrypt, pyotp
+pw = sys.stdin.readline().strip()
+h = bcrypt.hashpw(pw.encode(), bcrypt.gensalt()).decode()
+secret = pyotp.random_base32()
+print(h)
+print(secret)
+"')
+
+AUTH_PASSWORD_HASH=$(echo "$AUTH_CREDS" | sed -n '1p')
+TOTP_SECRET=$(echo "$AUTH_CREDS" | sed -n '2p')
+
+if [ -z "$AUTH_PASSWORD_HASH" ] || [ -z "$TOTP_SECRET" ]; then
+    error "Failed to generate auth credentials. Check Docker is running."
+    exit 1
+fi
+
+success "Password hashed with bcrypt."
 success "TOTP secret generated."
 
-# --- JWT Secret (auto-generated) ---
+# --- JWT Secret (auto-generated, pure bash) ---
 JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 48 | head -n 1)
 success "JWT secret generated."
 
-# --- Emergency Bypass Code (auto-generated) ---
+# --- Emergency Bypass Code (auto-generated, pure bash) ---
 EMERGENCY_BYPASS_CODE=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 32 | head -n 1)
 success "Emergency bypass code generated."
 

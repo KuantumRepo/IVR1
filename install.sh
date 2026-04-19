@@ -169,6 +169,63 @@ else
     fi
 fi
 
+# ── Authentication Credentials ──────────────────────────────────────────────
+divider
+echo ""
+info "Setting up authentication (Username + Password + TOTP 2FA)..."
+echo ""
+
+# --- Auth Username ---
+read -p "$(echo -e "${BOLD}Admin username${NC} [admin]: ")" AUTH_USERNAME_INPUT
+AUTH_USERNAME=${AUTH_USERNAME_INPUT:-admin}
+success "Username: $AUTH_USERNAME"
+
+# --- Auth Password ---
+echo ""
+while [ -z "$AUTH_PASSWORD_INPUT" ]; do
+    read -sp "$(echo -e "${BOLD}Admin password${NC} (required, will be bcrypt-hashed): ")" AUTH_PASSWORD_INPUT
+    echo ""
+    if [ -z "$AUTH_PASSWORD_INPUT" ]; then
+        warn "Password cannot be empty."
+    fi
+done
+
+# Hash the password with bcrypt using Python
+AUTH_PASSWORD_HASH=$(python3 -c "import bcrypt; print(bcrypt.hashpw(b'$AUTH_PASSWORD_INPUT', bcrypt.gensalt()).decode())" 2>/dev/null)
+if [ -z "$AUTH_PASSWORD_HASH" ]; then
+    # Try with passlib as fallback
+    AUTH_PASSWORD_HASH=$(python3 -c "from passlib.context import CryptContext; print(CryptContext(schemes=['bcrypt']).hash('$AUTH_PASSWORD_INPUT'))" 2>/dev/null)
+fi
+if [ -z "$AUTH_PASSWORD_HASH" ]; then
+    error "Failed to hash password. Ensure Python 3 with 'passlib' or 'bcrypt' is available."
+    error "Install: pip3 install passlib bcrypt"
+    exit 1
+fi
+success "Password hashed with bcrypt."
+
+# --- TOTP Secret (auto-generated) ---
+TOTP_SECRET=$(python3 -c "import pyotp; print(pyotp.random_base32())" 2>/dev/null)
+if [ -z "$TOTP_SECRET" ]; then
+    # Fallback: generate a base32 string manually
+    TOTP_SECRET=$(python3 -c "import base64, os; print(base64.b32encode(os.urandom(20)).decode())" 2>/dev/null)
+fi
+if [ -z "$TOTP_SECRET" ]; then
+    TOTP_SECRET=$(tr -dc 'A-Z2-7' < /dev/urandom | fold -w 32 | head -n 1)
+fi
+success "TOTP secret generated."
+
+# --- JWT Secret (auto-generated) ---
+JWT_SECRET=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 48 | head -n 1)
+success "JWT secret generated."
+
+# --- Emergency Bypass Code (auto-generated) ---
+EMERGENCY_BYPASS_CODE=$(tr -dc 'a-zA-Z0-9' < /dev/urandom | fold -w 32 | head -n 1)
+success "Emergency bypass code generated."
+
+# --- QR Setup ---
+QR_SETUP_ENABLED="true"
+info "QR_SETUP_ENABLED=true — you can scan the QR code after deployment."
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 header "Configuration Summary"
 
@@ -177,6 +234,11 @@ echo -e "  ${BOLD}Domain:${NC}          $DOMAIN_NAME"
 echo -e "  ${BOLD}Compose File:${NC}    $COMPOSE_FILE"
 echo -e "  ${BOLD}ESL Password:${NC}    ${ESL_PASSWORD:0:4}****"
 echo -e "  ${BOLD}DB Password:${NC}     ${DB_PASSWORD:0:4}****"
+echo -e "  ${BOLD}Auth User:${NC}       $AUTH_USERNAME"
+echo -e "  ${BOLD}Auth Password:${NC}   ******** (hashed)"
+echo -e "  ${BOLD}TOTP Secret:${NC}     ${TOTP_SECRET:0:8}****"
+echo -e "  ${BOLD}JWT Secret:${NC}      ${JWT_SECRET:0:8}****"
+echo -e "  ${BOLD}Bypass Code:${NC}     ${EMERGENCY_BYPASS_CODE:0:8}****"
 echo ""
 
 read -p "$(echo -e "${BOLD}Proceed with deployment?${NC} [Y/n]: ")" CONFIRM
@@ -225,6 +287,15 @@ FS_SIP_PORT=5060
 # RTP (voice + DTMF) to this address. Must be the VPS public IP.
 EXT_RTP_IP=$PUBLIC_IP
 EXT_SIP_IP=$PUBLIC_IP
+
+# ── Authentication ────────────────────────────────────────────────────────────
+AUTH_USERNAME=$AUTH_USERNAME
+AUTH_PASSWORD_HASH=$AUTH_PASSWORD_HASH
+TOTP_SECRET=$TOTP_SECRET
+EMERGENCY_BYPASS_CODE=$EMERGENCY_BYPASS_CODE
+JWT_SECRET=$JWT_SECRET
+JWT_EXPIRE_HOURS=24
+QR_SETUP_ENABLED=$QR_SETUP_ENABLED
 EOF
 
 success "Created .env with production values."
@@ -485,10 +556,39 @@ if [ "$DOMAIN_NAME" != "$PUBLIC_IP" ]; then
     divider
     echo ""
     warn "Don't forget to create a DNS A record:"
-    echo -e "    ${BOLD}${DOMAIN_NAME}${NC}  →  ${BOLD}${PUBLIC_IP}${NC}"
+    echo -e "    ${BOLD}${DOMAIN_NAME}${NC}  ->  ${BOLD}${PUBLIC_IP}${NC}"
     echo ""
     info "Caddy will auto-provision SSL once DNS propagates."
 fi
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# AUTHENTICATION CREDENTIALS
+# ═══════════════════════════════════════════════════════════════════════════════
+header "Authentication Credentials — SAVE THESE NOW"
+
+echo -e "  ${RED}${BOLD}╔══════════════════════════════════════════════════════════════╗${NC}"
+echo -e "  ${RED}${BOLD}║  CRITICAL: Save these credentials before continuing!        ║${NC}"
+echo -e "  ${RED}${BOLD}║  They will NOT be shown again.                              ║${NC}"
+echo -e "  ${RED}${BOLD}╚══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
+echo -e "  ${BOLD}Username:${NC}             $AUTH_USERNAME"
+echo -e "  ${BOLD}Password:${NC}             (the one you just entered)"
+echo -e "  ${BOLD}TOTP Secret:${NC}          ${CYAN}$TOTP_SECRET${NC}"
+echo -e "  ${BOLD}Emergency Bypass:${NC}     ${CYAN}$EMERGENCY_BYPASS_CODE${NC}"
+echo -e "  ${BOLD}JWT Secret:${NC}           ${CYAN}$JWT_SECRET${NC}"
+echo ""
+divider
+echo ""
+echo -e "  ${BOLD}${GREEN}TOTP Setup Flow:${NC}"
+echo -e "  1. Visit ${BOLD}https://${DOMAIN_NAME}/api/auth/qr${NC} in your browser"
+echo -e "  2. Scan the QR code with Google Authenticator"
+echo -e "  3. Edit .env and set ${BOLD}QR_SETUP_ENABLED=false${NC}"
+echo -e "  4. Restart: ${BOLD}docker compose restart backend${NC}"
+echo -e "  5. Login at ${BOLD}https://${DOMAIN_NAME}/login${NC}"
+echo ""
+echo -e "  ${YELLOW}If you lose your phone, use the Emergency Bypass Code${NC}"
+echo -e "  ${YELLOW}as the TOTP field to log in. Change it after.${NC}"
+echo ""
+
 success "Deployment script finished."
+

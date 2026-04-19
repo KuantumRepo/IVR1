@@ -12,11 +12,14 @@ import {
   UserCircle,
   Settings2,
   Activity,
-  BarChart3
+  BarChart3,
+  LogOut
 } from "lucide-react";
+import { useAuth } from "@/providers/AuthProvider";
 
 export function Sidebar() {
   const pathname = usePathname();
+  const { logout } = useAuth();
 
   const links = [
     { name: "Dashboard", href: "/", icon: LayoutDashboard },
@@ -69,7 +72,7 @@ export function Sidebar() {
         })}
       </nav>
 
-      <div className="p-4 border-t border-white/5">
+      <div className="p-4 border-t border-white/5 space-y-3">
         <div className="rounded-xl bg-background/60 backdrop-blur-xl border border-white/10 p-4 flex flex-col gap-2 relative overflow-hidden">
           <div className="absolute top-0 right-0 p-4 opacity-10">
             <Activity className="w-16 h-16" />
@@ -80,9 +83,18 @@ export function Sidebar() {
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
               <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
             </span>
-            <span className="text-sm font-medium text-emerald-400">Online & Routing</span>
+            <span className="text-sm font-medium text-emerald-400">Online &amp; Routing</span>
           </div>
         </div>
+
+        {/* Logout */}
+        <button
+          onClick={logout}
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs text-white/30 hover:text-red-400 hover:bg-red-500/5 transition-all duration-200 group"
+        >
+          <LogOut className="w-3.5 h-3.5" />
+          <span className="font-medium">Sign Out</span>
+        </button>
       </div>
     </div>
   );

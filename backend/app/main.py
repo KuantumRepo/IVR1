@@ -1,5 +1,6 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import os
 import logging
 from contextlib import asynccontextmanager
@@ -157,6 +158,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# ── Authentication ────────────────────────────────────────────────────────────
+from app.auth import router as auth_router, verify_token
+from jose import JWTError
+
+# Auth router is PUBLIC (login, verify, qr)
+app.include_router(auth_router)
+
+# JWT middleware — protects every /api/v1/* route
+@app.middleware("http")
+async def jwt_guard(request: Request, call_next):
+    """Enforce JWT authentication on all /api/v1/* routes.
+    
+    Public endpoints (health, root, auth) are excluded.
+    WebSocket connections are also excluded (they have their own auth).
+    """
+    path = request.url.path
+    
+    # Public paths — no auth required
+    if (
+        not path.startswith("/api/v1")
+        or path.startswith("/ws")
+    ):
+        return await call_next(request)
+    
+    # Extract Bearer token
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Not authenticated"}
+        )
+    
+    token = auth_header[7:]  # Strip "Bearer "
+    try:
+        verify_token(token)
+    except JWTError:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or expired token"}
+        )
+    
+    return await call_next(request)
+
+# ── API Routers ───────────────────────────────────────────────────────────────
 from app.api.v1.sip_gateways import router as gateways_router
 from app.api.v1.agents import router as agents_router
 from app.api.v1.caller_ids import router as caller_ids_router

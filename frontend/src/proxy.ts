@@ -1,22 +1,15 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-export default function proxy(request: NextRequest) {
-  const path = request.nextUrl.pathname;
-  
-  if (
-    path.startsWith('/login') ||
-    path.startsWith('/api') ||
-    path.startsWith('/_next') ||
-    path.includes('.')
-  ) {
-    return NextResponse.next()
-  }
-
-  let cookie = request.cookies.get('admin_auth')
-  if (!cookie || cookie.value !== 'authenticated') {
-    return NextResponse.redirect(new URL('/login', request.url))
-  }
-
+/**
+ * Next.js middleware — minimal pass-through.
+ * 
+ * Auth is now handled by:
+ *   - Backend: JWT middleware on all /api/v1/* routes
+ *   - Frontend: AuthProvider checks token and redirects to /login
+ * 
+ * This middleware no longer performs any auth checks.
+ */
+export default function middleware(request: NextRequest) {
   return NextResponse.next()
 }

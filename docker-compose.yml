@@ -149,6 +149,14 @@ services:
       AUDIO_DIR: /audio
       # FreeSWITCH conf shared volume path (inside Docker)
       FS_CONF_DIR: /usr/local/freeswitch/etc/freeswitch
+      # ── Authentication ──────────────────────────────────────────────────
+      AUTH_USERNAME: ${AUTH_USERNAME:-admin}
+      AUTH_PASSWORD_HASH: ${AUTH_PASSWORD_HASH:-}
+      TOTP_SECRET: ${TOTP_SECRET:-}
+      EMERGENCY_BYPASS_CODE: ${EMERGENCY_BYPASS_CODE:-}
+      JWT_SECRET: ${JWT_SECRET:-CHANGE_ME_IN_PRODUCTION}
+      JWT_EXPIRE_HOURS: ${JWT_EXPIRE_HOURS:-24}
+      QR_SETUP_ENABLED: ${QR_SETUP_ENABLED:-false}
     volumes:
       - ./data/audio:/audio
       - ./data/csv:/csv

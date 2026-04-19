@@ -10,6 +10,10 @@ websockets
 alembic
 pandas
 phonenumbers
+python-jose[cryptography]
+bcrypt
+pyotp
+qrcode[pil]
 genesis
 # TTS (lightweight ONNX-only, no PyTorch needed)
 kokoro-onnx

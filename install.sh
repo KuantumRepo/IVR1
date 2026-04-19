@@ -265,6 +265,11 @@ if [ -f ".env" ]; then
     cp .env .env.backup
 fi
 
+# Docker Compose interprets $ in .env files as variable substitution.
+# Bcrypt hashes contain $ (e.g. $2b$12$...) which would get mangled.
+# Escape every $ to $$ so Docker Compose treats them as literal $.
+AUTH_PASSWORD_HASH_ESCAPED="${AUTH_PASSWORD_HASH//\$/\$\$}"
+
 cat <<EOF > .env
 # ═══════════════════════════════════════════════════════════════════════════════
 # Broadcaster Production Environment
@@ -297,7 +302,7 @@ EXT_SIP_IP=$PUBLIC_IP
 
 # ── Authentication ────────────────────────────────────────────────────────────
 AUTH_USERNAME=$AUTH_USERNAME
-AUTH_PASSWORD_HASH=$AUTH_PASSWORD_HASH
+AUTH_PASSWORD_HASH=$AUTH_PASSWORD_HASH_ESCAPED
 TOTP_SECRET=$TOTP_SECRET
 EMERGENCY_BYPASS_CODE=$EMERGENCY_BYPASS_CODE
 JWT_SECRET=$JWT_SECRET

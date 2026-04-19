@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ArrowLeft, CheckCircle2, PlayCircle, Loader2, Bot, PhoneOff, Voicemail, ShieldCheck, Volume2, Info } from "lucide-react";
+import { ArrowRight, ArrowLeft, CheckCircle2, PlayCircle, Loader2, Bot, PhoneOff, Voicemail, ShieldCheck, Volume2, Info, Zap, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
@@ -115,6 +115,10 @@ export default function NewCampaignWizard() {
     campaign_mode: "A",
     vm_drop_audio_id: "" as string,
     
+    // Dynamic Caller ID
+    enable_dynamic_caller_id: false,
+    dynamic_caller_id_ratio: 100,
+    
     ring_timeout: 45,
     gateway_connect_timeout: 30,
     dial_timeout: 60,
@@ -144,6 +148,8 @@ export default function NewCampaignWizard() {
            enable_amd: formData.enable_amd,
            campaign_mode: formData.enable_amd ? formData.campaign_mode : "A",
            ring_timeout_sec: formData.ring_timeout,
+           enable_dynamic_caller_id: formData.enable_dynamic_caller_id,
+           dynamic_caller_id_ratio: formData.dynamic_caller_id_ratio,
        };
        
        // Only include VM drop audio ID for Mode B
@@ -255,12 +261,84 @@ export default function NewCampaignWizard() {
                 </select>
               </div>
               
-              {/* ── Caller ID Pool ─────────────────────────────────────────── */}
+              {/* ── Dynamic Caller ID + Pool ──────────────────────────────── */}
               <div className="bg-background/60 backdrop-blur-xl border border-white/10 rounded-2xl p-6">
+                
+                {/* Dynamic Caller ID Toggle */}
+                <div className="flex items-center justify-between mb-5">
+                  <label className="flex items-center gap-3 cursor-pointer group">
+                    <div className={`w-12 h-6 rounded-full transition-colors relative ${formData.enable_dynamic_caller_id ? 'bg-cyan-500' : 'bg-white/10'}`} onClick={() => setFormData({...formData, enable_dynamic_caller_id: !formData.enable_dynamic_caller_id})}>
+                      <div className={`absolute top-1 transform transition-transform bg-white w-4 h-4 rounded-full ${formData.enable_dynamic_caller_id ? 'translate-x-7' : 'translate-x-1'}`} />
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium text-white group-hover:text-cyan-400 transition-colors flex items-center gap-2">
+                        <Zap className="w-4 h-4" />
+                        Dynamic Caller ID
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">Automatically generates a local caller ID matching each contact&apos;s country and area code</div>
+                    </div>
+                  </label>
+                </div>
+
+                {/* Ratio Slider — only when dynamic is ON */}
+                {formData.enable_dynamic_caller_id && (
+                  <div className="mb-5 bg-cyan-500/5 border border-cyan-500/15 rounded-xl p-5 animate-in fade-in slide-in-from-top-2 duration-300">
+                    <div className="flex items-center justify-between mb-3">
+                      <span className="text-xs font-medium text-cyan-400 uppercase tracking-wider">Pool Mix Ratio</span>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={formData.dynamic_caller_id_ratio}
+                          onChange={(e) => {
+                            const val = Math.max(0, Math.min(100, parseInt(e.target.value) || 0));
+                            setFormData({...formData, dynamic_caller_id_ratio: val});
+                          }}
+                          className="w-16 bg-black/40 border border-cyan-500/20 rounded-lg px-2 py-1.5 text-sm text-white text-center focus:outline-none focus:border-cyan-500/40"
+                        />
+                        <span className="text-xs text-muted-foreground">%</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[11px] text-cyan-400 font-medium w-20 flex-shrink-0">Generated</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        value={formData.dynamic_caller_id_ratio}
+                        onChange={(e) => setFormData({...formData, dynamic_caller_id_ratio: parseInt(e.target.value)})}
+                        className="flex-1 accent-cyan-500"
+                      />
+                      <span className="text-[11px] text-emerald-400 font-medium w-20 text-right flex-shrink-0">From Pool</span>
+                    </div>
+                    <div className="flex justify-between mt-2">
+                      <span className="text-[10px] text-muted-foreground">{formData.dynamic_caller_id_ratio}% auto-generated</span>
+                      <span className="text-[10px] text-muted-foreground">{100 - formData.dynamic_caller_id_ratio}% from pool</span>
+                    </div>
+
+                    {/* Warning: pool ratio > 0 but no pool numbers selected */}
+                    {formData.dynamic_caller_id_ratio < 100 && formData.caller_ids.length === 0 && (
+                      <div className="flex items-center gap-1.5 mt-3">
+                        <AlertTriangle className="w-3 h-3 text-amber-400" />
+                        <span className="text-[11px] text-amber-400/80">No pool numbers selected — all calls will use generated IDs</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Caller ID Pool Selector */}
                 <div className="flex items-center justify-between mb-4">
                   <div>
-                    <label className="text-sm font-medium text-white block">Caller ID Pool (Rotation)</label>
-                    <p className="text-xs text-muted-foreground mt-1">Select numbers to rotate through. The dialer cycles through them to avoid spam flags.</p>
+                    <label className="text-sm font-medium text-white block">
+                      {formData.enable_dynamic_caller_id ? 'Caller ID Pool (Fallback / Mix)' : 'Caller ID Pool (Rotation)'}
+                    </label>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {formData.enable_dynamic_caller_id
+                        ? `These numbers are used for the ${100 - formData.dynamic_caller_id_ratio}% of calls that don't use generated IDs. Round-robin distribution.`
+                        : 'Select numbers to rotate through. The dialer cycles through them to avoid spam flags.'}
+                    </p>
                   </div>
                   {formData.caller_ids.length > 0 && (
                     <span className="text-xs font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full border border-emerald-500/20">

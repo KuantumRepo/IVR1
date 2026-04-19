@@ -24,6 +24,11 @@ class CampaignBase(BaseModel):
     # Audio file ID for voicemail drop (Mode B only)
     vm_drop_audio_id: Optional[UUID] = None
 
+    # Dynamic Caller ID — generates local-presence caller IDs per call
+    enable_dynamic_caller_id: bool = False
+    # Percentage of calls using generated IDs (0 = all pool, 100 = all generated)
+    dynamic_caller_id_ratio: int = 100
+
 class CampaignCreate(CampaignBase):
     list_ids: List[UUID]
     gateway_ids: List[UUID]

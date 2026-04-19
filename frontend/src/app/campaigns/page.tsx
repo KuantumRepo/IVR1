@@ -86,6 +86,11 @@ export default function CampaignsPage() {
                       {camp.status === 'ACTIVE' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
                       {camp.status}
                     </span>
+                    {camp.enable_dynamic_caller_id && (
+                      <span className="ml-2 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                        ⚡ Dynamic CID
+                      </span>
+                    )}
                   </td>
                   <td className="p-4 text-muted-foreground">{camp.total_contacts}</td>
                   <td className="p-4 text-muted-foreground">{camp.dialed_count}</td>

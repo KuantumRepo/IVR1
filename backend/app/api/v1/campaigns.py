@@ -130,6 +130,8 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     # Explicitly initialize Redis concurrency counter to 0 so it
     # doesn't rely on implicit None→0 fallback in the dialer loop.
     await redis_client.set(f"campaign_active:{campaign_id}", 0)
+    # Reset pool rotation index for fresh round-robin on each start
+    await redis_client.delete(f"campaign_pool_idx:{campaign_id}")
 
     return {"status": "started", "queue_size": campaign.total_contacts}
 
@@ -146,6 +148,8 @@ async def pause_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
 
     campaign.status = CampaignStatus.PAUSED
     await db.commit()
+    # Clean up pool rotation index on pause
+    await redis_client.delete(f"campaign_pool_idx:{campaign_id}")
     logger.info(f"Campaign {campaign_id} paused")
     return {"status": "paused"}
 
@@ -178,6 +182,8 @@ async def stop_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
 
     # Reset Redis active counter so it doesn't pollute future campaigns
     await redis_client.set(f"campaign_active:{campaign_id}", 0)
+    # Clean up pool rotation index
+    await redis_client.delete(f"campaign_pool_idx:{campaign_id}")
 
     logger.info(f"Campaign {campaign_id} aborted — queue cleared")
     return {"status": "aborted"}
@@ -203,6 +209,7 @@ async def delete_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db))
 
     # Clean up Redis
     await redis_client.delete(f"campaign_active:{campaign_id}")
+    await redis_client.delete(f"campaign_pool_idx:{campaign_id}")
 
     return {"status": "deleted"}
 

@@ -268,6 +268,11 @@ class Campaign(Base):
     # Example: {"initial_silence": 4000, "total_analysis_time": 6000, "short_speech_threshold_sec": 1.5}
     amd_config = Column(JSONB, nullable=True, default=None)
 
+    # Dynamic Caller ID — generates local-presence caller IDs matching destination area code
+    enable_dynamic_caller_id = Column(Boolean, default=False, nullable=False)
+    # Percentage of calls using generated IDs (0 = all pool, 100 = all generated)
+    dynamic_caller_id_ratio = Column(Integer, default=100, nullable=False)
+
     total_contacts = Column(Integer, default=0)
     dialed_count = Column(Integer, default=0)
     answered_count = Column(Integer, default=0)

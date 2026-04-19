@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import AsyncSessionLocal
 from app.models.core import Campaign, DialQueue, CampaignStatus, SipGateway
 from app.engine.rate_limiter import RateLimiter
+from app.engine.caller_id_generator import generate_local_caller_id
 from app.esl.connection import esl_manager
 from app.core.redis import publish_event, redis_client
 import random
@@ -126,6 +127,7 @@ class CampaignDialer:
                 )
                 # Clean up Redis counter
                 await redis_client.delete(redis_key)
+                await redis_client.delete(f"campaign_pool_idx:{campaign.id}")
             return
 
         for item in queue_items:
@@ -156,11 +158,60 @@ class CampaignDialer:
 
         dial_string = f"{prefix}{item.phone_number}"
 
-        # Apply Caller ID if configured (Dynamic Random Rotation)
+        # ── Caller ID Selection ─────────────────────────────────────────────
+        # Dynamic Caller ID: generates local-presence numbers per-call
+        # Pool rotation: round-robin via Redis index for even distribution
         caller_id_number = "0000000000"
-        if campaign.caller_ids:
-            random_cid = random.choice(campaign.caller_ids)
-            caller_id_number = random_cid.phone_number
+        cid_mode_used = "fallback"
+
+        if campaign.enable_dynamic_caller_id:
+            ratio = campaign.dynamic_caller_id_ratio
+            roll = random.randint(0, 99)
+
+            if roll < ratio:
+                # ── Generated local-presence caller ID ────────────────────
+                try:
+                    caller_id_number = generate_local_caller_id(item.phone_number)
+                    cid_mode_used = "generated"
+                    logger.info(
+                        f"Dynamic CID: generated {caller_id_number} "
+                        f"for destination {item.phone_number}"
+                    )
+                except Exception as e:
+                    logger.error(f"Dynamic CID generation failed: {e} — falling back to pool")
+                    # Fall through to pool logic below
+                    cid_mode_used = "generated_failed"
+
+            if cid_mode_used != "generated":
+                # ── Pool rotation via Redis round-robin ───────────────────
+                if campaign.caller_ids:
+                    pool_size = len(campaign.caller_ids)
+                    pool_key = f"campaign_pool_idx:{campaign.id}"
+                    idx = await redis_client.incr(pool_key)
+                    selected = campaign.caller_ids[(idx - 1) % pool_size]
+                    caller_id_number = selected.phone_number
+                    cid_mode_used = "pool"
+                    logger.debug(
+                        f"Pool CID: {caller_id_number} "
+                        f"(idx={idx}, pool_size={pool_size})"
+                    )
+                else:
+                    # Pool is empty but ratio < 100 — silently fall back to generated
+                    try:
+                        caller_id_number = generate_local_caller_id(item.phone_number)
+                        cid_mode_used = "generated_fallback"
+                        logger.info(
+                            f"Pool empty, generated fallback CID: {caller_id_number}"
+                        )
+                    except Exception as e:
+                        logger.error(f"All CID methods failed: {e}")
+                        cid_mode_used = "fallback"
+        else:
+            # ── Legacy behavior: random.choice from pool ──────────────────
+            if campaign.caller_ids:
+                random_cid = random.choice(campaign.caller_ids)
+                caller_id_number = random_cid.phone_number
+                cid_mode_used = "legacy_pool"
 
         # We uniquely track the resulting call by assigning FreeSWITCH vars
         # campaign_mode controls AMD behavior (A=hangup machine, B=VM drop, C=conservative)

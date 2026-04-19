@@ -174,10 +174,14 @@ async def get_qr_code():
     """
     Generate and return the TOTP QR code for Google Authenticator setup.
     
+    Returns a full HTML page with the scannable QR code and setup instructions.
+    
     SECURITY: This endpoint is ONLY available when QR_SETUP_ENABLED=true.
     After scanning, set QR_SETUP_ENABLED=false and redeploy to permanently
     disable this endpoint.
     """
+    from fastapi.responses import HTMLResponse
+
     if not QR_SETUP_ENABLED:
         raise HTTPException(
             status_code=403,
@@ -208,9 +212,148 @@ async def get_qr_code():
     buffer.seek(0)
     b64_image = base64.b64encode(buffer.read()).decode("utf-8")
 
-    return {
-        "qr_base64": f"data:image/png;base64,{b64_image}",
-        "manual_key": TOTP_SECRET,
-        "issuer": "Broadcaster",
-        "account": AUTH_USERNAME,
-    }
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Broadcaster — TOTP Setup</title>
+    <style>
+        * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+        body {{
+            min-height: 100vh;
+            background: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', sans-serif;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+        }}
+        .card {{
+            max-width: 460px;
+            width: 100%;
+            background: rgba(255,255,255,0.03);
+            border: 1px solid rgba(255,255,255,0.07);
+            border-radius: 20px;
+            padding: 40px 32px;
+            backdrop-filter: blur(40px);
+            box-shadow: 0 25px 50px rgba(0,0,0,0.5);
+        }}
+        .icon {{
+            width: 48px; height: 48px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.1), rgba(255,255,255,0.02));
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 14px;
+            display: flex; align-items: center; justify-content: center;
+            margin: 0 auto 24px;
+        }}
+        .icon svg {{ width: 24px; height: 24px; stroke: rgba(255,255,255,0.8); fill: none; stroke-width: 1.5; }}
+        h1 {{ font-size: 20px; font-weight: 600; text-align: center; margin-bottom: 6px; letter-spacing: -0.01em; }}
+        .subtitle {{ font-size: 11px; color: rgba(255,255,255,0.3); text-align: center; font-family: monospace; letter-spacing: 0.2em; text-transform: uppercase; margin-bottom: 32px; }}
+        .qr-wrap {{
+            background: #fff;
+            border-radius: 16px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 28px;
+            width: fit-content;
+        }}
+        .qr-wrap img {{ display: block; width: 240px; height: 240px; image-rendering: pixelated; }}
+        .manual-key {{
+            background: rgba(255,255,255,0.04);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 12px;
+            padding: 16px;
+            margin-bottom: 28px;
+        }}
+        .manual-key label {{ font-size: 10px; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.15em; font-weight: 500; display: block; margin-bottom: 8px; }}
+        .manual-key code {{
+            font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 15px;
+            letter-spacing: 0.12em;
+            color: #10b981;
+            word-break: break-all;
+            user-select: all;
+            cursor: text;
+        }}
+        .steps {{ list-style: none; counter-reset: step; }}
+        .steps li {{
+            counter-increment: step;
+            font-size: 13px;
+            color: rgba(255,255,255,0.5);
+            padding: 8px 0;
+            padding-left: 32px;
+            position: relative;
+            border-bottom: 1px solid rgba(255,255,255,0.04);
+        }}
+        .steps li:last-child {{ border-bottom: none; }}
+        .steps li::before {{
+            content: counter(step);
+            position: absolute;
+            left: 0;
+            width: 20px; height: 20px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 6px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 11px;
+            font-weight: 600;
+            color: rgba(255,255,255,0.4);
+        }}
+        .steps li strong {{ color: rgba(255,255,255,0.8); font-weight: 500; }}
+        .warning {{
+            margin-top: 24px;
+            background: rgba(239,68,68,0.08);
+            border: 1px solid rgba(239,68,68,0.15);
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-size: 11px;
+            color: rgba(239,68,68,0.8);
+            text-align: center;
+            line-height: 1.5;
+        }}
+        .footer {{ text-align: center; margin-top: 28px; font-size: 9px; color: rgba(255,255,255,0.1); font-family: monospace; letter-spacing: 0.2em; text-transform: uppercase; }}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div class="icon">
+            <svg viewBox="0 0 24 24" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+        </div>
+        <h1>Authenticator Setup</h1>
+        <p class="subtitle">Scan with Google Authenticator</p>
+        
+        <div class="qr-wrap">
+            <img src="data:image/png;base64,{b64_image}" alt="TOTP QR Code" />
+        </div>
+
+        <div class="manual-key">
+            <label>Manual Entry Key</label>
+            <code>{TOTP_SECRET}</code>
+        </div>
+
+        <ol class="steps">
+            <li>Open <strong>Google Authenticator</strong> on your phone</li>
+            <li>Tap <strong>+</strong> then <strong>Scan a QR code</strong></li>
+            <li>Point your camera at the QR code above</li>
+            <li>After scanning, edit <strong>.env</strong> and set <strong>QR_SETUP_ENABLED=false</strong></li>
+            <li>Run <strong>docker compose restart backend</strong></li>
+        </ol>
+
+        <div class="warning">
+            ⚠ This page will be permanently disabled after you set QR_SETUP_ENABLED=false.<br/>
+            Do not share this URL or leave it enabled in production.
+        </div>
+
+        <p class="footer">Broadcaster • Authorized Setup Only</p>
+    </div>
+</body>
+</html>"""
+
+    return HTMLResponse(content=html)
+

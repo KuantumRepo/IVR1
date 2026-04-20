@@ -179,6 +179,7 @@ async def jwt_guard(request: Request, call_next):
     if (
         not path.startswith("/api/v1")
         or path.startswith("/ws")
+        or path.endswith("/stream")
     ):
         return await call_next(request)
     

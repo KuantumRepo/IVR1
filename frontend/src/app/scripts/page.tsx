@@ -1,43 +1,40 @@
+"use client";
+
+import { useState, useEffect } from "react";
 import ScriptsClient from "./ScriptsClient";
 
-interface IvrRoute {
-  id: string;
-  key_pressed: string;
-  action_type: string;
-}
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
 
-interface IvrNode {
-  id: string;
-  name: string;
-  is_start_node: boolean;
-  tts_text?: string;
-  routes: IvrRoute[];
-}
+export default function ScriptsPage() {
+  const [scripts, setScripts] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-interface CallScript {
-  id: string;
-  name: string;
-  description?: string;
-  script_type: string;
-  nodes: IvrNode[];
-}
+  useEffect(() => {
+    async function loadScripts() {
+      try {
+        const res = await fetch(`${API_BASE}/call-scripts/`);
+        if (res.ok) {
+          const data = await res.json();
+          setScripts(data);
+        }
+      } catch {
+        // silently fail — empty list shown
+      } finally {
+        setLoading(false);
+      }
+    }
+    loadScripts();
+  }, []);
 
-export const dynamic = 'force-dynamic';
-
-async function getScripts(): Promise<CallScript[]> {
-  try {
-    const res = await fetch(
-      (process.env.INTERNAL_API_URL || '/api/v1') + '/call-scripts/',
-      { cache: 'no-store' }
+  if (loading) {
+    return (
+      <div className="p-8 sm:p-12 w-full max-w-6xl mx-auto relative z-10">
+        <div className="flex items-center justify-center py-20">
+          <div className="w-6 h-6 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+        </div>
+      </div>
     );
-    if (!res.ok) return [];
-    return res.json();
-  } catch {
-    return [];
   }
-}
 
-export default async function ScriptsPage() {
-  const scripts = await getScripts();
   return <ScriptsClient initialScripts={scripts} />;
 }

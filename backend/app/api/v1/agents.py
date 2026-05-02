@@ -1,5 +1,5 @@
 import secrets
-import re
+import xml.etree.ElementTree as ET
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -21,56 +21,58 @@ def _generate_sip_password(length: int = 16) -> str:
     return secrets.token_urlsafe(length)
 
 
-def _parse_sofia_registrations(raw: str | None) -> dict[str, dict]:
+def _parse_sofia_registrations_xml(raw: str | None) -> dict[str, dict]:
     """
-    Parse the output of 'sofia status profile internal reg' into a dict
+    Parse the XML output of 'sofia xmlstatus profile internal reg' into a dict
     keyed by extension (user id).
     
-    Example FS output line:
-    Registrations:
-    =================================
-    Call-ID:     abc123
-    User:        1001@10.5.0.3
-    Contact:     "1001" <sip:1001@10.0.0.5:5060;...>
-    Agent:       MicroSIP/3.21.3
-    Status:      Registered(UDP)(unknown) EXP(2024-01-01 ...)
-    ...
-    =================================
+    XML format (confirmed from production FS v1.10):
+      <profile>
+        <registrations>
+          <registration>
+            <user>3002@18.218.221.240</user>
+            <agent>PortSIP UC Client  Android - v13.2.9</agent>
+            <status>Registered(UDP)(unknown) ...</status>
+            <sip-auth-user>3002</sip-auth-user>
+          </registration>
+        </registrations>
+      </profile>
     """
     result = {}
     if not raw:
         return result
-    
-    # Split into registration blocks
-    blocks = re.split(r'={3,}', raw)
-    
-    current_user = None
-    current_agent = None
-    current_status = None
-    
-    for block in blocks:
-        lines = block.strip().split('\n')
-        user = None
-        agent = None
-        status = None
-        
-        for line in lines:
-            line = line.strip()
-            if line.startswith('User:'):
-                # User: 1001@10.5.0.3
-                user_part = line.split(':', 1)[1].strip()
-                user = user_part.split('@')[0] if '@' in user_part else user_part
-            elif line.startswith('Agent:'):
-                agent = line.split(':', 1)[1].strip()
-            elif line.startswith('Status:'):
-                status = line.split(':', 1)[1].strip()
-        
-        if user and status and 'Registered' in status:
-            result[user] = {
-                "user_agent": agent,
-                "status": status,
-            }
-    
+
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError:
+        return result
+
+    for reg in root.findall('.//registration'):
+        user_el = reg.find('user')
+        agent_el = reg.find('agent')
+        status_el = reg.find('status')
+        sip_auth_user_el = reg.find('sip-auth-user')
+
+        if user_el is None or status_el is None:
+            continue
+
+        status_text = status_el.text or ''
+        if 'Registered' not in status_text:
+            continue
+
+        # Use sip-auth-user for the extension (clean, no @domain)
+        # Fall back to parsing user@domain
+        if sip_auth_user_el is not None and sip_auth_user_el.text:
+            ext = sip_auth_user_el.text.strip()
+        else:
+            user_text = user_el.text or ''
+            ext = user_text.split('@')[0] if '@' in user_text else user_text
+
+        result[ext] = {
+            "user_agent": agent_el.text.strip() if agent_el is not None and agent_el.text else None,
+            "status": status_text.strip(),
+        }
+
     return result
 
 
@@ -119,9 +121,9 @@ async def list_agents(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Agent))
     agents = result.scalars().all()
     
-    # Fetch live registrations from FreeSWITCH
-    reg_data = await esl_manager.api("sofia status profile internal reg")
-    registered_exts = _parse_sofia_registrations(reg_data)
+    # Fetch live registrations from FreeSWITCH (XML format for reliable multi-agent parsing)
+    reg_data = await esl_manager.api("sofia xmlstatus profile internal reg")
+    registered_exts = _parse_sofia_registrations_xml(reg_data)
     
     results = []
     for agent in agents:
@@ -144,8 +146,8 @@ async def get_agent(agent_id: UUID, db: AsyncSession = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Agent not found")
     
     # Check live status
-    reg_data = await esl_manager.api("sofia status profile internal reg")
-    registered_exts = _parse_sofia_registrations(reg_data)
+    reg_data = await esl_manager.api("sofia xmlstatus profile internal reg")
+    registered_exts = _parse_sofia_registrations_xml(reg_data)
     
     resp = AgentResponse.model_validate(agent)
     ext = agent.sip_extension or agent.phone_or_sip

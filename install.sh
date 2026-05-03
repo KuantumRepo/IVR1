@@ -399,6 +399,48 @@ info "Firewall rules:"
 ufw status numbered 2>/dev/null | head -20
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# PHASE 3.5: SIP Scanner Protection (fail2ban)
+# ═══════════════════════════════════════════════════════════════════════════════
+header "Phase 3.5/6 — SIP Scanner Protection"
+
+info "Installing fail2ban for automated SIP scanner blocking..."
+
+if ! command -v fail2ban-client &> /dev/null; then
+    apt-get install -y -qq fail2ban > /dev/null 2>&1
+fi
+success "fail2ban installed"
+
+# Deploy FreeSWitch-specific filter
+if [ -f "fail2ban/filter.d/freeswitch.conf" ]; then
+    cp fail2ban/filter.d/freeswitch.conf /etc/fail2ban/filter.d/freeswitch.conf
+    success "Deployed FreeSWitch auth-failure filter"
+else
+    warn "fail2ban/filter.d/freeswitch.conf not found — skipping filter deploy"
+fi
+
+# Deploy jail config (logpath will be set after containers start)
+cat <<'JAIL' > /etc/fail2ban/jail.local
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12 10.0.0.0/8
+
+[freeswitch]
+enabled  = true
+filter   = freeswitch
+backend  = auto
+# LOGPATH_PLACEHOLDER — updated by install.sh after containers start
+logpath  = /var/log/freeswitch.log
+port     = 5060,5061,5080,5081
+protocol = all
+maxretry = 5
+findtime = 600
+bantime  = 3600
+action   = iptables-allports[name=freeswitch, protocol=all]
+JAIL
+success "Deployed fail2ban jail config (logpath updated after container start)"
+
+info "fail2ban will be activated after containers start (Phase 5)."
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 4: Container Images
 # ═══════════════════════════════════════════════════════════════════════════════
 header "Phase 4/6 — Container Images"
@@ -470,6 +512,16 @@ fi
 echo ""
 info "Waiting for services to initialize (30 seconds)..."
 sleep 30
+
+# ── Activate fail2ban with correct Docker log path ──────────────────────────
+FS_LOG_PATH=$(docker inspect $($COMPOSE ps -q freeswitch 2>/dev/null) --format '{{.LogPath}}' 2>/dev/null || echo "")
+if [ -n "$FS_LOG_PATH" ] && [ -f /etc/fail2ban/jail.local ]; then
+    sed -i "s|logpath.*=.*|logpath  = ${FS_LOG_PATH}|" /etc/fail2ban/jail.local
+    systemctl restart fail2ban 2>/dev/null || true
+    success "fail2ban activated — monitoring FreeSWitch logs for scanner attacks"
+else
+    warn "Could not determine FreeSWitch container log path — fail2ban not activated"
+fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PHASE 6: Health Checks

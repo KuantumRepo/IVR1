@@ -1,0 +1,2 @@
+# This directory holds dynamically created campaign queue XML files.
+# They are created/destroyed by the backend queue_manager.py module.

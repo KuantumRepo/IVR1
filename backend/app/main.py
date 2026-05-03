@@ -71,9 +71,21 @@ async def _sync_agents_to_callcenter():
                 try:
                     await esl_manager.bgapi(f"callcenter_config agent add {ext} Callback")
                     await esl_manager.bgapi(f"callcenter_config agent set contact {ext} user/{ext}")
-                    await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Available'")
                     await esl_manager.bgapi(f"callcenter_config agent set state {ext} Waiting")
                     await esl_manager.bgapi(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
+                    
+                    # Check if agent's softphone is actually registered before
+                    # marking Available. Previously we blindly set all agents
+                    # to Available, causing the queue to try ringing offline
+                    # agents → USER_NOT_REGISTERED → queue exhaustion → caller dropped.
+                    reg_check = await esl_manager.api(f"sofia_contact user/{ext}")
+                    is_registered = reg_check and "error" not in str(reg_check).lower()
+                    if is_registered:
+                        await esl_manager.bgapi(f"callcenter_config agent set status {ext} Available")
+                        logger.info(f"Agent {ext}: registered → Available")
+                    else:
+                        await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
+                        logger.info(f"Agent {ext}: not registered → Logged Out")
                 except Exception as e:
                     logger.error(f"Failed to sync agent {ext}: {e}")
             
@@ -156,6 +168,14 @@ async def lifespan(app: FastAPI):
     
     # Regenerate all gateway XMLs from DB (purges stale files)
     asyncio.create_task(_sync_gateway_xml_on_startup())
+    
+    # Purge stale campaign queue XMLs from previous runs.
+    # Campaigns will recreate their queues when started via the API.
+    from app.engine.queue_manager import QUEUE_DIR
+    if QUEUE_DIR.exists():
+        for qf in QUEUE_DIR.glob("campaign_*.xml"):
+            qf.unlink()
+            logger.info(f"Purged stale campaign queue XML: {qf.name}")
     
     yield
     

@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy.orm import selectinload
 from sqlalchemy import func, update, delete
 from typing import List
 from uuid import UUID
@@ -15,6 +16,9 @@ from app.models.core import (
     DialQueue, Contact, CallLog, CampaignStatus, campaign_contact_lists
 )
 from app.schemas.campaign import CampaignCreate, CampaignResponse
+from app.engine.queue_manager import (
+    create_campaign_queue, destroy_campaign_queue
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +72,11 @@ async def get_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
 
 @router.post("/{campaign_id}/start")
 async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
+    result = await db.execute(
+        select(Campaign)
+        .options(selectinload(Campaign.agents))
+        .where(Campaign.id == campaign_id)
+    )
     campaign = result.scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
@@ -127,6 +135,20 @@ async def start_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     campaign.status = CampaignStatus.ACTIVE
     await db.commit()
 
+    # ── Create campaign-specific mod_callcenter queue ─────────────────
+    # This gives each campaign its own agent pool in FreeSWitch.
+    # Agents assigned to the campaign become tiers in this queue.
+    agent_extensions = []
+    for agent in campaign.agents:
+        ext = agent.sip_extension or agent.phone_or_sip
+        agent_extensions.append(str(ext))
+    
+    if agent_extensions:
+        await create_campaign_queue(campaign_id, agent_extensions)
+        logger.info(f"Campaign {campaign_id}: created callcenter queue with {len(agent_extensions)} agents")
+    else:
+        logger.warning(f"Campaign {campaign_id}: no agents assigned — transfers will use global queue")
+
     # Explicitly initialize Redis concurrency counter to 0 so it
     # doesn't rely on implicit None→0 fallback in the dialer loop.
     await redis_client.set(f"campaign_active:{campaign_id}", 0)
@@ -159,9 +181,10 @@ async def stop_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     """
     Force-stop / abort a campaign.
 
-    Sets status to ABORTED, clears remaining dial queue, and resets Redis
-    active call counter. Active calls in FreeSWITCH will naturally complete
-    and their hangup events will be handled normally.
+    Sets status to ABORTED, clears remaining dial queue, destroys the
+    campaign's mod_callcenter queue, and resets Redis active call counter.
+    Active calls in FreeSWITCH will naturally complete and their hangup
+    events will be handled normally.
     """
     result = await db.execute(select(Campaign).where(Campaign.id == campaign_id))
     campaign = result.scalar_one_or_none()
@@ -180,12 +203,15 @@ async def stop_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
     campaign.completed_at = datetime.now(timezone.utc)
     await db.commit()
 
+    # Destroy the campaign's mod_callcenter queue (tiers + XML)
+    await destroy_campaign_queue(campaign_id)
+
     # Reset Redis active counter so it doesn't pollute future campaigns
     await redis_client.set(f"campaign_active:{campaign_id}", 0)
     # Clean up pool rotation index
     await redis_client.delete(f"campaign_pool_idx:{campaign_id}")
 
-    logger.info(f"Campaign {campaign_id} aborted — queue cleared")
+    logger.info(f"Campaign {campaign_id} aborted — queue + dial queue cleared")
     return {"status": "aborted"}
 
 
@@ -195,6 +221,9 @@ async def delete_campaign(campaign_id: UUID, db: AsyncSession = Depends(get_db))
     campaign = result.scalar_one_or_none()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+
+    # Destroy mod_callcenter queue if it exists
+    await destroy_campaign_queue(campaign_id)
 
     # Clean dial queue first
     await db.execute(

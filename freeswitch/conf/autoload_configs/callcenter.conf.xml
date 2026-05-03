@@ -18,6 +18,8 @@
       <param name="discard-abandoned-after" value="60"/>
       <param name="abandoned-resume-allowed" value="false"/>
     </queue>
+    <!-- Dynamic campaign-specific queues (created/destroyed by backend) -->
+    <X-PRE-PROCESS cmd="include" data="campaign_queues/*.xml"/>
   </queues>
 
   <!-- We add agents dynamically via API (callcenter_config agent add) -->

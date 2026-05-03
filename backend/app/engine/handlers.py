@@ -782,8 +782,13 @@ async def on_execute_complete(event):
 
         # ── TRANSFER ──────────────────────────────────────────────────────
         if action == "TRANSFER": # or IvrNodeType.TRANSFER
-            logger.info(f"Bridging {uuid} to mod_callcenter internal_sales_queue")
-            await log_test_trace(event, "ROUTING", "Action TRANSFER triggered. Bridging to agent pool.")
+            # Route to campaign-specific queue if available, else global fallback
+            from app.engine.queue_manager import get_queue_name_for_campaign
+            queue_name = get_queue_name_for_campaign(campaign_id)
+            logger.info(f"Bridging {uuid} to mod_callcenter queue '{queue_name}'")
+            await log_test_trace(event, "ROUTING", f"Action TRANSFER triggered. Bridging to queue '{queue_name}'.")
+            
+            caller_number = event.get("Caller-Caller-ID-Number", "unknown")
             
             if campaign_id:
                 try:
@@ -793,8 +798,22 @@ async def on_execute_complete(event):
                         await session.commit()
                 except Exception as e:
                     logger.error(f"Transfer counter increment failed: {e}")
+                
+                # Publish transfer event for live dashboard
+                try:
+                    import json as _json
+                    await publish_event("campaign_events", _json.dumps({
+                        "type": "TRANSFER_INITIATED",
+                        "campaign_id": campaign_id,
+                        "caller_number": caller_number,
+                        "queue": queue_name,
+                        "uuid": uuid,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    }))
+                except Exception:
+                    pass  # Dashboard event is non-critical
 
-            bridge = "callcenter:internal_sales_queue"
+            bridge = f"callcenter:{queue_name}"
             dest = f"{prefix}{bridge}"
             cmd = f"uuid_transfer {uuid} '{dest}' inline"
             await esl_manager.bgapi(cmd)

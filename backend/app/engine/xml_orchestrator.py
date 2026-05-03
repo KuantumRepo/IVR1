@@ -3,11 +3,14 @@ from pathlib import Path
 import logging
 from app.models.core import SipGateway, Agent
 from app.esl.connection import esl_manager
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Usually freeswitch/conf is mounted, but if we run locally we need to find it
-FS_CONF_DIR = Path(os.environ.get("FS_CONF_DIR", "/etc/freeswitch")) if os.path.exists("/.dockerenv") else Path("../freeswitch/conf")
+# Single source of truth for FS config directory — always use settings.FS_CONF_DIR
+# Previously, this module resolved its own path which could differ from the
+# settings path, causing XML deletions to target the wrong directory.
+FS_CONF_DIR = Path(settings.FS_CONF_DIR)
 PROFILES_DIR = FS_CONF_DIR / "sip_profiles" / "external"
 DIRECTORY_DIR = FS_CONF_DIR / "directory" / "default"
 
@@ -26,7 +29,7 @@ async def generate_gateway_xml(gateway: SipGateway):
         
         # Build XML
         xml_content = f"""<include>
-  <gateway name="{gateway.name}">
+  <gateway name="{gateway.id}">
     <param name="realm" value="{gateway.sip_server}"/>
 """
         if gateway.sip_username:

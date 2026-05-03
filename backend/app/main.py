@@ -25,10 +25,16 @@ async def _sync_agents_to_callcenter():
     mod_callcenter stores agents in memory — they're lost when FreeSWITCH
     restarts. This function waits for the ESL pool to connect, then
     re-adds every agent with their correct contact string and tier.
+    
+    Also reconciles the agent XML directory: purges stale XML files for
+    agents that were deleted from the database (e.g. via the admin UI)
+    but whose XML files survived due to path mismatch or crash.
     """
     import asyncio
+    from pathlib import Path
     from app.esl.connection import esl_manager
     from app.core.database import AsyncSessionLocal
+    from app.core.config import settings
     from app.models.core import Agent
     from sqlalchemy.future import select
     
@@ -39,6 +45,22 @@ async def _sync_agents_to_callcenter():
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Agent))
             agents = result.scalars().all()
+            
+            # ── Reconcile agent XML directory ─────────────────────────────
+            # Build set of expected extensions from DB
+            db_extensions = set()
+            for agent in agents:
+                ext = agent.sip_extension or agent.phone_or_sip
+                db_extensions.add(str(ext))
+            
+            # Purge orphaned XML files (agent deleted from UI but file remained)
+            agent_dir = Path(settings.FS_CONF_DIR) / "directory" / "default"
+            if agent_dir.exists():
+                for xml_file in agent_dir.glob("*.xml"):
+                    ext_name = xml_file.stem  # e.g. "3001" from "3001.xml"
+                    if ext_name not in db_extensions:
+                        xml_file.unlink()
+                        logger.info(f"Purged orphaned agent XML: {xml_file.name}")
             
             if not agents:
                 logger.info("No agents to sync into mod_callcenter")

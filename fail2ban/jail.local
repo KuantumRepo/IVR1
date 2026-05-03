@@ -1,0 +1,14 @@
+[DEFAULT]
+ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12 10.0.0.0/8
+
+[freeswitch]
+enabled  = true
+filter   = freeswitch
+backend  = auto
+logpath  = /var/lib/docker/containers/a44103d9746be2afb6b349c85c341f5f3c2afec3e8efd9c32d2e9a6d0f588db6/a44103d9746be2afb6b349c85c341f5f3c2afec3e8efd9c32d2e9a6d0f588db6-json.log
+port     = 5060,5061,5080,5081
+protocol = all
+maxretry = 5
+findtime = 600
+bantime  = 3600
+action   = iptables-allports[name=freeswitch, protocol=all]

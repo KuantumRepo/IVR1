@@ -22,42 +22,99 @@ logger = logging.getLogger(__name__)
 async def _sync_agents_to_callcenter():
     """Re-provision all agents from DB into mod_callcenter on startup.
     
-    mod_callcenter stores agents in memory — they're lost when FreeSWITCH
-    restarts. This function waits for the ESL pool to connect, then
-    re-adds every agent with their correct contact string and tier.
+    Uses a raw TCP ESL connection to bypass Genesis library entirely.
+    
+    Why not use Genesis: The Genesis library's Protocol.send() pops command
+    responses from an asyncio.Queue that accumulates stale responses from
+    previous cancelled operations ("queue poisoning"). This causes api()
+    calls to return wrong data.
+    
+    Fix: a minimal raw-TCP ESL client that reads each response inline after
+    sending each command. No queue, no background tasks, no poisoning.
+    Only used for startup sync (~50 commands).
     
     Also reconciles the agent XML directory: purges stale XML files for
-    agents that were deleted from the database (e.g. via the admin UI)
-    but whose XML files survived due to path mismatch or crash.
+    agents that were deleted from the database.
     """
     import asyncio
     from pathlib import Path
-    from app.esl.connection import esl_manager
     from app.core.database import AsyncSessionLocal
     from app.core.config import settings
     from app.models.core import Agent
     from sqlalchemy.future import select
-    
-    # Wait for ESL pool to be ready
+
+    # Wait for FS to be ready
     await asyncio.sleep(5)
-    
+
+    async def _raw_esl_session():
+        """Raw TCP ESL client — sends commands, reads responses inline.
+        
+        ESL protocol (inbound):
+        1. FS sends "Content-Type: auth/request"
+        2. We send "auth <password>"
+        3. FS sends "Content-Type: command/reply" with "+OK accepted"
+        4. For each command: send "api <cmd>\\n\\n", read response headers + body
+        """
+        reader, writer = await asyncio.open_connection(
+            settings.FS_ESL_HOST, settings.FS_ESL_PORT
+        )
+        
+        async def read_event() -> dict:
+            """Read one ESL event (headers + optional body)."""
+            headers = {}
+            while True:
+                line = await reader.readline()
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    break
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    headers[key.strip()] = val.strip()
+            
+            # Read body if Content-Length is present
+            body = ""
+            if "Content-Length" in headers:
+                length = int(headers["Content-Length"])
+                raw = await reader.readexactly(length)
+                body = raw.decode("utf-8", errors="replace")
+            
+            headers["body"] = body
+            return headers
+        
+        # 1. Read auth/request
+        await read_event()
+        
+        # 2. Authenticate
+        writer.write(f"auth {settings.FS_ESL_PASSWORD}\n\n".encode())
+        await writer.drain()
+        auth_resp = await read_event()
+        if "+OK" not in auth_resp.get("Reply-Text", ""):
+            raise ConnectionError("ESL auth failed")
+        
+        async def send_api(cmd: str) -> str:
+            """Send an api command and return the response body."""
+            writer.write(f"api {cmd}\n\n".encode())
+            await writer.drain()
+            resp = await read_event()
+            return resp.get("body", "").strip()
+        
+        return reader, writer, send_api
+
     try:
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(Agent))
             agents = result.scalars().all()
             
             # ── Reconcile agent XML directory ─────────────────────────────
-            # Build set of expected extensions from DB
             db_extensions = set()
             for agent in agents:
                 ext = agent.sip_extension or agent.phone_or_sip
                 db_extensions.add(str(ext))
             
-            # Purge orphaned XML files (agent deleted from UI but file remained)
             agent_dir = Path(settings.FS_CONF_DIR) / "directory" / "default"
             if agent_dir.exists():
                 for xml_file in agent_dir.glob("*.xml"):
-                    ext_name = xml_file.stem  # e.g. "3001" from "3001.xml"
+                    ext_name = xml_file.stem
                     if ext_name not in db_extensions:
                         xml_file.unlink()
                         logger.info(f"Purged orphaned agent XML: {xml_file.name}")
@@ -65,31 +122,43 @@ async def _sync_agents_to_callcenter():
             if not agents:
                 logger.info("No agents to sync into mod_callcenter")
                 return
-            
-            for agent in agents:
-                ext = agent.sip_extension or agent.phone_or_sip
-                try:
-                    await esl_manager.bgapi(f"callcenter_config agent add {ext} Callback")
-                    await esl_manager.bgapi(f"callcenter_config agent set contact {ext} user/{ext}")
-                    await esl_manager.bgapi(f"callcenter_config agent set state {ext} Waiting")
-                    await esl_manager.bgapi(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
-                    
-                    # Check if agent's softphone is actually registered before
-                    # marking Available. Previously we blindly set all agents
-                    # to Available, causing the queue to try ringing offline
-                    # agents → USER_NOT_REGISTERED → queue exhaustion → caller dropped.
-                    reg_check = await esl_manager.api(f"sofia_contact user/{ext}")
-                    is_registered = reg_check and "error" not in str(reg_check).lower()
-                    if is_registered:
-                        await esl_manager.bgapi(f"callcenter_config agent set status {ext} Available")
-                        logger.info(f"Agent {ext}: registered → Available")
-                    else:
-                        await esl_manager.bgapi(f"callcenter_config agent set status {ext} 'Logged Out'")
-                        logger.info(f"Agent {ext}: not registered → Logged Out")
-                except Exception as e:
-                    logger.error(f"Failed to sync agent {ext}: {e}")
-            
-            logger.info(f"Synced {len(agents)} agent(s) into mod_callcenter")
+        
+        # ── Open raw ESL connection and sync agents ───────────────────────
+        reader, writer, send_api = await _raw_esl_session()
+        logger.info("Agent sync: raw ESL connection established (bypassing Genesis)")
+        
+        for agent in agents:
+            ext = agent.sip_extension or agent.phone_or_sip
+            try:
+                # Delete first to reset status to default (Logged Out).
+                # mod_callcenter's API parser splits on spaces, so multi-word
+                # statuses (Logged Out, On Break) CANNOT be set via api commands.
+                # Workaround: delete → add (defaults to Logged Out) → only set
+                # Available for agents whose softphone is actually registered.
+                await send_api(f"callcenter_config agent del {ext}")
+                await send_api(f"callcenter_config agent add {ext} Callback")
+                await send_api(f"callcenter_config agent set contact {ext} user/{ext}")
+                await send_api(f"callcenter_config agent set state {ext} Waiting")
+                await send_api(f"callcenter_config tier add internal_sales_queue {ext} 1 1")
+                
+                # Check registration — only promote to Available if registered
+                reg_result = await send_api(f"sofia_contact user/{ext}")
+                is_registered = bool(reg_result) and "error" not in reg_result.lower()
+                
+                if is_registered:
+                    await send_api(f"callcenter_config agent set status {ext} Available")
+                    logger.info(f"Agent {ext}: registered → Available")
+                else:
+                    # Agent stays at default 'Logged Out' — won't receive calls
+                    logger.info(f"Agent {ext}: not registered → Logged Out (default)")
+            except Exception as e:
+                logger.error(f"Failed to sync agent {ext}: {e}", exc_info=True)
+        
+        logger.info(f"Synced {len(agents)} agent(s) into mod_callcenter")
+        
+        # Close raw connection
+        writer.close()
+        await writer.wait_closed()
     except Exception as e:
         logger.error(f"Agent sync failed: {e}", exc_info=True)
 

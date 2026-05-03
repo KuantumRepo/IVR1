@@ -8,8 +8,14 @@ approach: write queue XML → callcenter_config queue load → manage tiers via 
 Thread safety: mod_callcenter's command handlers are thread-safe for tier add/del
 and queue load operations. The key rule is: create the queue and add tiers
 BEFORE any call tries to transfer to it (done at campaign start).
+
+NOTE on Genesis queue poisoning: The shared ESL pool's api() (foreground)
+calls are unreliable because Genesis's asyncio.Queue accumulates stale
+responses from previous cancelled operations. All commands here use bgapi()
+(fire-and-forget) with strategic sleeps for ordering, which is safe since
+we don't need to parse the return values.
 """
-import os
+import asyncio
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -38,8 +44,7 @@ def _generate_queue_xml(campaign_id: UUID | str) -> str:
     """Generate a mod_callcenter queue XML definition for a campaign.
     
     Uses the same proven settings as internal_sales_queue but with a
-    campaign-specific name. The queue is loaded into FS via
-    callcenter_config queue load.
+    campaign-specific name.
     """
     name = _queue_name(campaign_id)
     return f"""<include>
@@ -70,12 +75,8 @@ async def create_campaign_queue(campaign_id: UUID | str, agent_extensions: List[
     3. Loading the queue into mod_callcenter's memory
     4. Adding each assigned agent as a tier
     
-    Args:
-        campaign_id: Campaign UUID
-        agent_extensions: List of SIP extensions (e.g. ["3001", "3002"])
-    
-    Returns:
-        True if queue was created successfully
+    All ESL commands use bgapi() (fire-and-forget) to avoid Genesis queue
+    poisoning. Short sleeps ensure command ordering.
     """
     queue_name = _queue_name(campaign_id)
     
@@ -89,42 +90,27 @@ async def create_campaign_queue(campaign_id: UUID | str, agent_extensions: List[
         logger.info(f"Wrote queue XML: {xml_path}")
         
         # 2. Reload XML so FS picks up the new file
-        await esl_manager.api("reloadxml")
+        await esl_manager.bgapi("reloadxml")
+        await asyncio.sleep(0.5)  # Give FS time to parse new XML
         
         # 3. Load the queue into mod_callcenter's memory
-        result = await esl_manager.api(f"callcenter_config queue load {queue_name}")
-        logger.info(f"Queue load result: {result}")
+        await esl_manager.bgapi(f"callcenter_config queue load {queue_name}")
+        await asyncio.sleep(0.3)  # Ensure queue is loaded before adding tiers
+        logger.info(f"Campaign queue '{queue_name}' loaded into mod_callcenter")
         
-        # 4. Add agent tiers — only for agents whose softphone is registered
-        added = 0
+        # 4. Add agent tiers
         for i, ext in enumerate(agent_extensions):
             try:
-                # Verify agent is registered before adding to tier
-                reg_check = await esl_manager.api(f"sofia_contact user/{ext}")
-                is_registered = reg_check and "error" not in str(reg_check).lower()
-                
                 await esl_manager.bgapi(
                     f"callcenter_config tier add {queue_name} {ext} 1 {i + 1}"
                 )
-                
-                # Set agent status based on registration
-                if is_registered:
-                    await esl_manager.bgapi(
-                        f"callcenter_config agent set status {ext} Available"
-                    )
-                    added += 1
-                    logger.info(f"Tier added: {ext} → {queue_name} (registered)")
-                else:
-                    await esl_manager.bgapi(
-                        f"callcenter_config agent set status {ext} 'Logged Out'"
-                    )
-                    logger.info(f"Tier added: {ext} → {queue_name} (offline)")
+                logger.info(f"Tier added: {ext} → {queue_name}")
             except Exception as e:
                 logger.error(f"Failed to add tier {ext} → {queue_name}: {e}")
         
         logger.info(
             f"Campaign queue '{queue_name}' created with "
-            f"{added}/{len(agent_extensions)} registered agents"
+            f"{len(agent_extensions)} agent tier(s)"
         )
         return True
         
@@ -136,28 +122,18 @@ async def create_campaign_queue(campaign_id: UUID | str, agent_extensions: List[
 async def destroy_campaign_queue(campaign_id: UUID | str) -> bool:
     """Destroy a campaign's mod_callcenter queue.
     
-    Called when a campaign stops/aborts/completes. Removes all tiers,
-    unloads the queue from memory, and deletes the XML file.
+    Called when a campaign stops/aborts/completes. Unloads the queue
+    from memory and deletes the XML file. Tier cleanup happens
+    automatically when the queue is unloaded.
     """
     queue_name = _queue_name(campaign_id)
     
     try:
-        # 1. List and remove all tiers for this queue
-        tier_result = await esl_manager.api("callcenter_config tier list")
-        if tier_result:
-            for line in str(tier_result).strip().split("\n"):
-                if queue_name in line:
-                    parts = line.split("|")
-                    if len(parts) >= 2:
-                        agent_name = parts[1]
-                        await esl_manager.bgapi(
-                            f"callcenter_config tier del {queue_name} {agent_name}"
-                        )
-        
-        # 2. Unload the queue from mod_callcenter memory
+        # 1. Unload the queue from mod_callcenter memory
+        # (this also removes all associated tiers)
         await esl_manager.bgapi(f"callcenter_config queue unload {queue_name}")
         
-        # 3. Delete the XML file
+        # 2. Delete the XML file
         xml_path = _queue_xml_path(campaign_id)
         if xml_path.exists():
             xml_path.unlink()
@@ -177,26 +153,9 @@ async def add_agent_to_campaign(campaign_id: UUID | str, extension: str) -> bool
     """
     queue_name = _queue_name(campaign_id)
     try:
-        # Get current tier count for position
-        tier_result = await esl_manager.api("callcenter_config tier list")
-        position = 1
-        if tier_result:
-            for line in str(tier_result).strip().split("\n"):
-                if queue_name in line:
-                    position += 1
-        
         await esl_manager.bgapi(
-            f"callcenter_config tier add {queue_name} {extension} 1 {position}"
+            f"callcenter_config tier add {queue_name} {extension} 1 1"
         )
-        
-        # Check registration and set status
-        reg_check = await esl_manager.api(f"sofia_contact user/{extension}")
-        is_registered = reg_check and "error" not in str(reg_check).lower()
-        if is_registered:
-            await esl_manager.bgapi(
-                f"callcenter_config agent set status {extension} Available"
-            )
-        
         logger.info(f"Agent {extension} added to campaign queue {queue_name}")
         return True
     except Exception as e:

@@ -71,6 +71,28 @@ if [ "$1" = 'freeswitch' ]; then
         fi
     fi
 
+    # ── Security: Purge vanilla default users ─────────────────────────────
+    # The vanilla FreeSWITCH config ships with extensions 1000-1019 using
+    # password "1234". SIP scanners WILL crack these within hours and use
+    # your gateways for toll fraud. Our backend provisions real agents
+    # dynamically via generate_agent_xml() with cryptographic passwords.
+    DIRECTORY_DIR="${FS_PREFIX}/etc/freeswitch/directory/default"
+    if [ -d "$DIRECTORY_DIR" ]; then
+        PURGED=0
+        for f in "$DIRECTORY_DIR"/100[0-9].xml \
+                 "$DIRECTORY_DIR"/101[0-9].xml \
+                 "$DIRECTORY_DIR"/brian.xml \
+                 "$DIRECTORY_DIR"/default.xml \
+                 "$DIRECTORY_DIR"/example.com.xml \
+                 "$DIRECTORY_DIR"/skinny-example.xml; do
+            if [ -f "$f" ] && grep -q 'default_password' "$f" 2>/dev/null; then
+                rm -f "$f"
+                PURGED=$((PURGED + 1))
+            fi
+        done
+        [ $PURGED -gt 0 ] && echo "Security: purged $PURGED vanilla user(s) with default_password"
+    fi
+
     # ── Run hook scripts ────────────────────────────────────────────────────
     # Drop any .sh files in /docker-entrypoint.d/ to run custom init logic
     # (e.g., generating gateway configs, setting environment-specific vars).

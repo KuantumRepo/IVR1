@@ -81,7 +81,7 @@
     <param name="watchdog-step-timeout" value="30000"/>
     <param name="watchdog-event-timeout" value="30000"/>
 
-    <param name="log-auth-failures" value="false"/>
+    <param name="log-auth-failures" value="true"/>
     <param name="forward-unsolicited-mwi-notify" value="false"/>
 
     <param name="context" value="public"/>
@@ -282,7 +282,7 @@
     <!-- Force the user and auth-user to match. -->
     <param name="inbound-reg-force-matching-username" value="true"/>
     <!-- on authed calls, authenticate *all* the packets not just invite -->
-    <param name="auth-all-packets" value="false"/>
+    <param name="auth-all-packets" value="true"/>
 
     <!-- external_sip_ip
          Used as the public IP address for SDP.

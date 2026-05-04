@@ -274,6 +274,7 @@ class CampaignDialer:
             f"campaign_mode={campaign_mode_val},"
             f"vm_drop_audio_id={vm_drop_id_val},"
             f"amd_config={amd_config_val},"
+            f"dtmf_type=none,"
             f"ignore_early_media=true,"
             f"disable_video=true,"
             f"origination_caller_id_number={caller_id_number}}}"

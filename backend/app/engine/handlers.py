@@ -80,6 +80,17 @@ async def on_channel_answer(event):
     
     await log_test_trace(event, "NETWORK", "Call Answered. Evaluative Handlers engaged.")
 
+    # ── Dynamic SDP Inspection (Carrier-Agnostic DTMF) ─────────────────────
+    sdp = event.get("variable_switch_r_sdp", "")
+    import re
+    if not re.search(r"a=rtpmap:\d+\s+telephone-event", sdp, re.IGNORECASE):
+        logger.info(f"Legacy TDM Route detected for {uuid} (No RFC 2833). Engaging inband start_dtmf fallback.")
+        await esl_manager.execute(uuid, "start_dtmf", "")
+    else:
+        logger.info(f"RFC 2833 negotiated for {uuid}. Bypassing inband DSP.")
+    # ────────────────────────────────────────────────────────────────────────
+
+
     async with AsyncSessionLocal() as db:
         try:
             camp = await db.get(Campaign, UUID(campaign_id))
@@ -636,16 +647,7 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = Fals
 
 
 
-    # ── Carrier-Immune DTMF Normalization ──────────────────────────────────
-    # 1. Engage SpanDSP in-band audio detector for carrier-immune DTMF.
-    #    spandsp_start_dtmf uses the industrial SpanDSP Goertzel algorithm
-    #    which reliably detects DTMF even through codec transcoding, SBC
-    #    mangling, and carriers that strip RFC2833 telephone-event.
-    #    CRITICAL: Do NOT also enable start_dtmf — running two detectors
-    #    simultaneously causes double-detection feedback loops.
-    logger.info(f"Executing spandsp_start_dtmf on {uuid}...")
-    spandsp_res = await esl_manager.execute(uuid, "spandsp_start_dtmf", "")
-    logger.info(f"Response from spandsp_start_dtmf: {spandsp_res}")
+
     
     # 2. Flush the channel buffer to instantly destroy lingering inputs from previous menus
     await esl_manager.execute(uuid, "flush_dtmf", "")
@@ -837,6 +839,10 @@ async def on_execute_complete(event):
                     }))
                 except Exception:
                     pass  # Dashboard event is non-critical
+
+            # ── Agent Bridging Scrubbing ──────────────────────────────────────
+            # Scrub DTMF events from the A-leg to prevent acoustic bleed into agent headset
+            await esl_manager.api(f"uuid_setvar {uuid} drop_dtmf true")
 
             bridge = f"callcenter:{queue_name}"
             dest = f"{prefix}{bridge}"

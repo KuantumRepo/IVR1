@@ -245,9 +245,9 @@ async def _registration_event_watcher():
             if "+OK" not in auth_resp.get("Reply-Text", ""):
                 raise ConnectionError("ESL auth failed for registration watcher")
             
-            # 2. Subscribe to CUSTOM events (sofia register/unregister)
+            # 2. Subscribe to CUSTOM events (sofia register/unregister/expire)
             # This is the FreeSWITCH-standard way to receive registration events
-            writer.write(b"event plain CUSTOM sofia::register sofia::unregister\n\n")
+            writer.write(b"event plain CUSTOM sofia::register sofia::unregister sofia::expire\n\n")
             await writer.drain()
             sub_resp = await read_event()
             logger.info(f"Registration watcher: subscribed to sofia events: {sub_resp.get('Reply-Text', '')}")
@@ -286,8 +286,9 @@ async def _registration_event_watcher():
                         await writer.drain()
                         await read_event()  # Read command response
                         
-                    elif subclass == "sofia::unregister":
-                        logger.info(f"Registration watcher: {ext} unregistered → setting Logged Out")
+                    elif subclass in ("sofia::unregister", "sofia::expire"):
+                        reason = "unregistered" if subclass == "sofia::unregister" else "expired"
+                        logger.info(f"Registration watcher: {ext} {reason} → setting Logged Out")
                         writer.write(f"api callcenter_config agent set status {ext} 'Logged Out'\n\n".encode())
                         await writer.drain()
                         await read_event()  # Read command response

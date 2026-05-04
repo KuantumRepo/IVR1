@@ -275,6 +275,7 @@ async def test_call_script(request: TestCallRequest, db: AsyncSession = Depends(
     
     try:
         from app.core.redis import publish_event
+        from app.engine.queue_manager import create_campaign_queue
         import json
         from datetime import datetime, timezone
         
@@ -283,6 +284,14 @@ async def test_call_script(request: TestCallRequest, db: AsyncSession = Depends(
             "tag": "SYSTEM",
             "detail": f"Bootstrapping Test Flow bridge to {request.phone_number}"
         }))
+        
+        # Provision the campaign queue so TRANSFER nodes have a valid destination.
+        # This mirrors what happens when a real campaign starts — the queue must
+        # exist in mod_callcenter BEFORE any call tries to transfer to it.
+        agent_exts = []
+        if camp.agents:
+            agent_exts = [a.sip_extension or a.phone_or_sip for a in camp.agents]
+        await create_campaign_queue(camp.id, agent_exts)
         
         await esl_manager.bgapi(f"originate {vars}{dial_string} &park()")
     except Exception as e:

@@ -162,6 +162,151 @@ async def _sync_agents_to_callcenter():
     except Exception as e:
         logger.error(f"Agent sync failed: {e}", exc_info=True)
 
+
+async def _registration_event_watcher():
+    """Dedicated ESL event listener for SIP registration lifecycle.
+    
+    FreeSWITCH recommended pattern: a persistent inbound ESL connection
+    subscribing to CUSTOM sofia::register and sofia::unregister events.
+    When an agent's softphone connects/disconnects, we update their
+    mod_callcenter status accordingly:
+    
+      - sofia::register   → callcenter_config agent set status <ext> Available
+      - sofia::unregister → callcenter_config agent set status <ext> 'Logged Out'
+    
+    Why a separate connection: Genesis Consumer's event delivery is unreliable
+    for CUSTOM subclass events. Using raw TCP ESL with explicit 'event plain CUSTOM'
+    subscription guarantees we receive these events.
+    
+    Uses api (foreground) commands on the SAME connection — no pool poisoning risk
+    since this connection is dedicated and serialized.
+    """
+    import asyncio
+    import urllib.parse
+    from app.core.config import settings
+    from app.core.database import AsyncSessionLocal
+    from app.models.core import Agent
+    from sqlalchemy.future import select
+    
+    # Wait for FS to be fully ready (after agent sync completes)
+    await asyncio.sleep(12)
+    
+    # Cache known agent extensions for filtering (refresh periodically)
+    known_extensions: set[str] = set()
+    
+    async def _refresh_known_extensions():
+        try:
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(select(Agent))
+                agents = result.scalars().all()
+                known_extensions.clear()
+                for a in agents:
+                    ext = a.sip_extension or a.phone_or_sip
+                    known_extensions.add(str(ext))
+        except Exception as e:
+            logger.warning(f"Registration watcher: failed to refresh extensions: {e}")
+    
+    await _refresh_known_extensions()
+    
+    backoff = 5
+    while True:
+        try:
+            reader, writer = await asyncio.open_connection(
+                settings.FS_ESL_HOST, settings.FS_ESL_PORT
+            )
+            logger.info("Registration watcher: raw ESL connection established")
+            backoff = 5  # Reset backoff on successful connect
+            
+            async def read_event() -> dict:
+                headers = {}
+                while True:
+                    line = await reader.readline()
+                    if not line:
+                        raise ConnectionError("ESL connection closed")
+                    line = line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        break
+                    if ":" in line:
+                        key, val = line.split(":", 1)
+                        headers[key.strip()] = val.strip()
+                body = ""
+                if "Content-Length" in headers:
+                    length = int(headers["Content-Length"])
+                    raw = await reader.readexactly(length)
+                    body = raw.decode("utf-8", errors="replace")
+                headers["_body"] = body
+                return headers
+            
+            # 1. Authenticate
+            await read_event()  # auth/request
+            writer.write(f"auth {settings.FS_ESL_PASSWORD}\n\n".encode())
+            await writer.drain()
+            auth_resp = await read_event()
+            if "+OK" not in auth_resp.get("Reply-Text", ""):
+                raise ConnectionError("ESL auth failed for registration watcher")
+            
+            # 2. Subscribe to CUSTOM events (sofia register/unregister)
+            # This is the FreeSWITCH-standard way to receive registration events
+            writer.write(b"event plain CUSTOM sofia::register sofia::unregister\n\n")
+            await writer.drain()
+            sub_resp = await read_event()
+            logger.info(f"Registration watcher: subscribed to sofia events: {sub_resp.get('Reply-Text', '')}")
+            
+            # Periodic extension refresh counter
+            event_count = 0
+            
+            # 3. Event loop — process registration events
+            while True:
+                event = await read_event()
+                content_type = event.get("Content-Type", "")
+                
+                # The event body contains the actual event data as key-value pairs
+                if content_type == "text/event-plain":
+                    body = event.get("_body", "")
+                    # Parse the event body into a dict
+                    ev = {}
+                    for line in body.split("\n"):
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            ev[k.strip()] = urllib.parse.unquote(v.strip())
+                    
+                    subclass = ev.get("Event-Subclass", "")
+                    ext = ev.get("from-user", "")
+                    
+                    if not ext:
+                        continue
+                    
+                    # Only process known agent extensions (ignore random SIP scanners)
+                    if ext not in known_extensions:
+                        continue
+                    
+                    if subclass == "sofia::register":
+                        logger.info(f"Registration watcher: {ext} registered → setting Available")
+                        writer.write(f"api callcenter_config agent set status {ext} Available\n\n".encode())
+                        await writer.drain()
+                        await read_event()  # Read command response
+                        
+                    elif subclass == "sofia::unregister":
+                        logger.info(f"Registration watcher: {ext} unregistered → setting Logged Out")
+                        writer.write(f"api callcenter_config agent set status {ext} 'Logged Out'\n\n".encode())
+                        await writer.drain()
+                        await read_event()  # Read command response
+                    
+                    # Refresh extensions cache every 100 events
+                    event_count += 1
+                    if event_count % 100 == 0:
+                        await _refresh_known_extensions()
+                        
+        except Exception as e:
+            logger.warning(f"Registration watcher: disconnected ({e}). Reconnecting in {backoff}s...")
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except:
+                pass
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)  # Exponential backoff, max 60s
+
 async def _sync_gateway_xml_on_startup():
     """Regenerate all gateway XML files from the database on startup.
     
@@ -172,23 +317,25 @@ async def _sync_gateway_xml_on_startup():
       - 904 "no matching challenge" for IP-auth trunks still set to register=true
       - Missing dtmf-type causing DTMF failures
     
-    This function purges all dynamic gateway XMLs and regenerates them from
-    the current database state + current code, ensuring consistency.
+    This function:
+      1. Purges all dynamic gateway XMLs and regenerates from current DB + code
+      2. Kills any FreeSWITCH-live gateways that no longer exist in the DB
+         (handles crash-during-delete edge cases)
     """
     import asyncio
     from pathlib import Path
     from app.core.database import AsyncSessionLocal
     from app.models.core import SipGateway
     from app.api.v1.sip_gateways import generate_freeswitch_xml
+    from app.core.config import settings
     from sqlalchemy.future import select
     
     await asyncio.sleep(3)
     
     try:
-        # Resolve the gateway XML directory
-        backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        workspace_dir = os.path.dirname(backend_dir)
-        gw_dir = Path(workspace_dir) / "freeswitch" / "conf" / "sip_profiles" / "external"
+        # Use the configured FS_CONF_DIR which maps to the Docker shared volume
+        # (./freeswitch/conf:/usr/local/freeswitch/etc/freeswitch:rw)
+        gw_dir = Path(settings.FS_CONF_DIR) / "sip_profiles" / "external"
         gw_dir.mkdir(parents=True, exist_ok=True)
         
         # Purge ALL existing gateway XMLs (they may be stale)
@@ -197,11 +344,13 @@ async def _sync_gateway_xml_on_startup():
             logger.info(f"Purged stale gateway XML: {xml_file.name}")
         
         # Regenerate from DB
+        db_gateway_ids = set()
         async with AsyncSessionLocal() as db:
             result = await db.execute(select(SipGateway).where(SipGateway.is_active == True))
             gateways = result.scalars().all()
             
             for gw in gateways:
+                db_gateway_ids.add(str(gw.id))
                 xml_content = generate_freeswitch_xml(gw)
                 filepath = gw_dir / f"{gw.id}.xml"
                 with open(filepath, "w", encoding="utf-8") as f:
@@ -216,6 +365,30 @@ async def _sync_gateway_xml_on_startup():
         await esl_manager.api("reloadxml")
         await esl_manager.bgapi("sofia profile external rescan")
         logger.info("FreeSWITCH XML reloaded + external profile rescanned")
+        
+        # ── Kill stale gateways in FreeSWITCH memory ─────────────────────
+        # 'sofia profile external rescan' only ADDS/UPDATES gateways — it
+        # does NOT remove deleted ones. We must explicitly killgw each stale
+        # gateway that exists in FS but not in the DB.
+        await asyncio.sleep(2)  # Give rescan time to settle
+        gwlist_raw = await esl_manager.api("sofia profile external gwlist")
+        gwlist_str = str(gwlist_raw).strip() if gwlist_raw else ""
+        
+        if gwlist_str and not gwlist_str.startswith("-ERR"):
+            live_gw_ids = set(gwlist_str.split())
+            stale_gw_ids = live_gw_ids - db_gateway_ids
+            
+            for stale_id in stale_gw_ids:
+                try:
+                    await esl_manager.api(f"sofia profile external killgw {stale_id}")
+                    logger.info(f"Killed stale FreeSWITCH gateway: {stale_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to kill stale gateway {stale_id}: {e}")
+            
+            if stale_gw_ids:
+                logger.info(f"Cleaned up {len(stale_gw_ids)} stale gateway(s) from FreeSWITCH")
+            else:
+                logger.info("No stale gateways — FreeSWITCH and DB are in sync")
         
     except Exception as e:
         logger.error(f"Gateway XML sync failed: {e}", exc_info=True)
@@ -237,6 +410,10 @@ async def lifespan(app: FastAPI):
     
     # Regenerate all gateway XMLs from DB (purges stale files)
     asyncio.create_task(_sync_gateway_xml_on_startup())
+    
+    # Dedicated ESL listener for sofia::register/unregister events.
+    # Keeps mod_callcenter agent status in sync with live SIP registrations.
+    asyncio.create_task(_registration_event_watcher())
     
     # Purge stale campaign queue XMLs from previous runs.
     # Campaigns will recreate their queues when started via the API.

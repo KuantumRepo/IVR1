@@ -346,3 +346,96 @@ async def get_amd_stats(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
         "layer_breakdown": layer_breakdown,
         "mode_breakdown": mode_breakdown,
     }
+
+
+@router.get("/{campaign_id}/agents/status")
+async def get_campaign_agent_status(campaign_id: UUID, db: AsyncSession = Depends(get_db)):
+    """Get live mod_callcenter status for each agent assigned to a campaign.
+    
+    Queries FreeSWitch directly via raw ESL to get real-time agent states.
+    Returns: [{ extension, name, status, state }]
+    """
+    import asyncio
+    from app.core.config import settings
+
+    # 1. Get campaign with agents
+    result = await db.execute(
+        select(Campaign)
+        .options(selectinload(Campaign.agents))
+        .where(Campaign.id == campaign_id)
+    )
+    campaign = result.scalar_one_or_none()
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not campaign.agents:
+        return []
+
+    # 2. Query FS agent list via raw ESL
+    agent_statuses = {}
+    try:
+        reader, writer = await asyncio.open_connection(
+            settings.FS_ESL_HOST, settings.FS_ESL_PORT
+        )
+
+        async def read_event() -> dict:
+            headers = {}
+            while True:
+                line = await reader.readline()
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    break
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    headers[key.strip()] = val.strip()
+            body = ""
+            if "Content-Length" in headers:
+                length = int(headers["Content-Length"])
+                raw = await reader.readexactly(length)
+                body = raw.decode("utf-8", errors="replace")
+            headers["body"] = body
+            return headers
+
+        # Auth
+        await read_event()
+        writer.write(f"auth {settings.FS_ESL_PASSWORD}\n\n".encode())
+        await writer.drain()
+        await read_event()
+
+        # Get agent list
+        writer.write(b"api callcenter_config agent list\n\n")
+        await writer.drain()
+        resp = await read_event()
+        body = resp.get("body", "")
+
+        # Parse: name|...|...|type|contact|status|state|...
+        for line in body.strip().split("\n"):
+            if "|" not in line or line.startswith("name"):
+                continue
+            parts = line.split("|")
+            if len(parts) >= 7:
+                ext = parts[0]
+                status = parts[5]
+                state = parts[6]
+                agent_statuses[ext] = {"status": status, "state": state}
+
+        writer.close()
+        await writer.wait_closed()
+    except Exception as e:
+        logger.warning(f"Agent status query failed: {e}")
+
+    # 3. Build response
+    result_list = []
+    for agent in campaign.agents:
+        ext = agent.sip_extension or agent.phone_or_sip
+        fs_data = agent_statuses.get(str(ext), {})
+        result_list.append({
+            "id": str(agent.id),
+            "name": agent.name,
+            "extension": str(ext),
+            "status": fs_data.get("status", "Unknown"),
+            "state": fs_data.get("state", "Unknown"),
+        })
+
+    return result_list
+

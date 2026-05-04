@@ -1,6 +1,6 @@
 "use client";
 
-import { UserPlus, Headset, CircleOff, Copy, Check, RefreshCw, KeyRound, Phone, Wifi, WifiOff } from "lucide-react";
+import { UserPlus, Headset, CircleOff, Copy, Check, RefreshCw, KeyRound, Phone, Wifi, WifiOff, Trash2 } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 
 const API = process.env.NEXT_PUBLIC_API_URL || '/api/v1';
@@ -15,6 +15,8 @@ interface AgentData {
   current_calls: number;
   sip_registered: boolean;
   sip_user_agent: string | null;
+  callcenter_status: string | null;
+  callcenter_state: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -24,6 +26,40 @@ interface Credentials {
   sip_password: string;
   sip_server: string;
   sip_port: number;
+}
+
+function StatusBadge({ registered, ccStatus, ccState }: { registered: boolean; ccStatus: string | null; ccState: string | null }) {
+  // Priority: show callcenter state if available, else SIP registration
+  if (ccStatus === "Available" && ccState === "In a queue call") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">
+        <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+        On Call
+      </span>
+    );
+  }
+  if (ccStatus === "Available") {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_6px_rgba(16,185,129,0.6)]" />
+        Available
+      </span>
+    );
+  }
+  if (registered) {
+    return (
+      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-blue-500/10 text-blue-400 border border-blue-500/20">
+        <Wifi className="w-3 h-3" />
+        Registered
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-neutral-500/10 text-neutral-400 border border-neutral-500/20">
+      <WifiOff className="w-3 h-3" />
+      Offline
+    </span>
+  );
 }
 
 export default function AgentsPage() {
@@ -44,8 +80,8 @@ export default function AgentsPage() {
 
   useEffect(() => {
     fetchAgents();
-    // Poll every 10s for live registration updates
-    const interval = setInterval(fetchAgents, 10000);
+    // Poll every 5s for live status updates
+    const interval = setInterval(fetchAgents, 5000);
     return () => clearInterval(interval);
   }, [fetchAgents]);
 
@@ -122,12 +158,18 @@ export default function AgentsPage() {
     setTimeout(() => setCopiedField(null), 2000);
   };
 
+  // Summary counts
+  const onlineCount = agents.filter(a => a.sip_registered || a.callcenter_status === "Available").length;
+  const availableCount = agents.filter(a => a.callcenter_status === "Available").length;
+
   return (
     <div className="p-8 pb-20 sm:p-12 w-full max-w-6xl mx-auto relative z-10">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight text-white mb-1">Live Agents</h1>
-          <p className="text-muted-foreground">Manage your SIP agent pool for live transfers.</p>
+          <p className="text-muted-foreground">
+            {agents.length} provisioned · <span className="text-emerald-400">{availableCount} available</span> · <span className="text-blue-400">{onlineCount} connected</span>
+          </p>
         </div>
         <div className="flex items-center gap-3">
           <button onClick={fetchAgents} className="p-2.5 rounded-lg border border-white/10 hover:bg-white/5 transition-colors text-muted-foreground hover:text-white" title="Refresh">
@@ -140,65 +182,75 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {agents.length === 0 ? (
-          <div className="col-span-full p-12 text-center bg-background/60 backdrop-blur-xl border border-white/10 rounded-2xl">
-            <Headset className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-50" />
-            <h3 className="text-xl font-medium text-white mb-2 tracking-tight">No Agents Configured</h3>
-            <p className="text-muted-foreground max-w-md mx-auto">Create your first agent to enable live call bridging via FreeSWITCH.</p>
-          </div>
-        ) : (
-          agents.map((agent) => (
-            <div key={agent.id} className="bg-background/60 backdrop-blur-xl border border-white/10 p-6 rounded-2xl group hover:border-white/20 transition-colors flex flex-col justify-between">
-              <div>
-                <div className="flex justify-between items-start mb-4">
-                  <div className="w-12 h-12 bg-white/5 rounded-full flex items-center justify-center">
-                    <span className="text-lg font-medium text-white">{agent.name.charAt(0)}</span>
-                  </div>
-                  <div className="flex flex-col items-end gap-1.5">
-                    {/* SIP Registration Status */}
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border
-                      ${agent.sip_registered
-                        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                        : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
-                      {agent.sip_registered
-                        ? <Wifi className="w-3 h-3" />
-                        : <WifiOff className="w-3 h-3" />}
-                      {agent.sip_registered ? 'Registered' : 'Offline'}
+      {agents.length === 0 ? (
+        <div className="p-12 text-center bg-background/60 backdrop-blur-xl border border-white/10 rounded-2xl">
+          <Headset className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-50" />
+          <h3 className="text-xl font-medium text-white mb-2 tracking-tight">No Agents Configured</h3>
+          <p className="text-muted-foreground max-w-md mx-auto">Create your first agent to enable live call bridging via FreeSWITCH.</p>
+        </div>
+      ) : (
+        <div className="bg-background/60 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden">
+          <table className="w-full">
+            <thead>
+              <tr className="border-b border-white/5">
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Agent</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Extension</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Status</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Queue Activity</th>
+                <th className="text-left text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Device</th>
+                <th className="text-right text-xs font-semibold text-muted-foreground uppercase tracking-wider px-6 py-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {agents.map((agent, i) => (
+                <tr key={agent.id} className={`border-b border-white/5 last:border-0 hover:bg-white/[0.02] transition-colors ${i % 2 === 0 ? '' : 'bg-white/[0.01]'}`}>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 bg-white/5 rounded-full flex items-center justify-center flex-shrink-0">
+                        <span className="text-sm font-medium text-white">{agent.name.charAt(0)}</span>
+                      </div>
+                      <span className="text-sm font-medium text-white">{agent.name}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-sm font-mono text-muted-foreground">{agent.sip_extension || agent.phone_or_sip}</span>
+                  </td>
+                  <td className="px-6 py-4">
+                    <StatusBadge 
+                      registered={agent.sip_registered} 
+                      ccStatus={agent.callcenter_status}
+                      ccState={agent.callcenter_state}
+                    />
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-xs text-muted-foreground">
+                      {agent.callcenter_state || '—'}
                     </span>
-                    {/* Agent Status */}
-                    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border
-                      ${agent.status === 'AVAILABLE' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 
-                        agent.status === 'ON_CALL' ? 'bg-amber-500/10 text-amber-400 border-amber-500/20' : 
-                        'bg-neutral-500/10 text-neutral-400 border-neutral-500/20'}`}>
-                      {agent.status === 'AVAILABLE' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />}
-                      {agent.status === 'ON_CALL' && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
-                      {agent.status}
+                  </td>
+                  <td className="px-6 py-4">
+                    <span className="text-xs text-muted-foreground/60 truncate max-w-[150px] block">
+                      {agent.sip_user_agent || '—'}
                     </span>
-                  </div>
-                </div>
-                <h3 className="text-lg font-medium text-white">{agent.name}</h3>
-                <p className="text-sm text-muted-foreground font-mono mt-1">ext: {agent.sip_extension || agent.phone_or_sip}</p>
-                {agent.sip_user_agent && (
-                  <p className="text-xs text-muted-foreground/60 mt-1">📱 {agent.sip_user_agent}</p>
-                )}
-              </div>
-              
-              <div className="mt-6 flex justify-between items-center border-t border-white/5 pt-4">
-                <div className="flex gap-3">
-                  <button onClick={() => handleTestAgent(agent.id)} className="text-xs font-medium text-emerald-400/80 hover:text-emerald-400 transition-colors flex items-center gap-1" title="Ring agent">
-                    <Phone className="w-3 h-3" /> Test
-                  </button>
-                  <button onClick={() => handleResetPassword(agent.id)} className="text-xs font-medium text-blue-400/80 hover:text-blue-400 transition-colors flex items-center gap-1" title="Reset SIP password">
-                    <KeyRound className="w-3 h-3" /> Reset PW
-                  </button>
-                </div>
-                <button onClick={() => handleDeleteAgent(agent.id)} className="text-xs font-medium text-destructive-foreground hover:text-red-400 transition-colors">Terminate</button>
-              </div>
-            </div>
-          ))
-        )}
-      </div>
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex items-center justify-end gap-2">
+                      <button onClick={() => handleTestAgent(agent.id)} className="p-2 rounded-lg hover:bg-emerald-500/10 text-muted-foreground hover:text-emerald-400 transition-colors" title="Ring agent">
+                        <Phone className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => handleResetPassword(agent.id)} className="p-2 rounded-lg hover:bg-blue-500/10 text-muted-foreground hover:text-blue-400 transition-colors" title="Reset SIP password">
+                        <KeyRound className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => handleDeleteAgent(agent.id)} className="p-2 rounded-lg hover:bg-red-500/10 text-muted-foreground hover:text-red-400 transition-colors" title="Terminate agent">
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* ── Add Agent Modal ── */}
       {isModalOpen && (

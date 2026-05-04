@@ -2,7 +2,7 @@
 
 import { useEffect, useState, use, useCallback, useRef } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
-import { Pause, Square, Activity, Play, ArrowLeft } from "lucide-react";
+import { Pause, Square, Activity, Play, ArrowLeft, Users, PhoneForwarded, Clock, CheckCircle2, XCircle } from "lucide-react";
 import Link from "next/link";
 import { useWebSocket } from "@/providers/WebSocketProvider";
 
@@ -32,7 +32,8 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
   });
 
   // ── Real-time call tracking from WebSocket ────────────────────────────
-  const { events } = useWebSocket();
+  const { events, transfers } = useWebSocket();
+  const activeTransfers = transfers.filter((t: any) => t.campaign_id === resolvedParams.id);
   const activeCalls = useRef(0);
   const transferredCalls = useRef(0);
 
@@ -81,6 +82,24 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
      fetchMetrics();
      return () => clearInterval(interval);
   }, [fetchMetrics]);
+
+  const [agentStatus, setAgentStatus] = useState<any[]>([]);
+
+  const fetchAgentStatus = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_URL}/campaigns/${resolvedParams.id}/agents/status`);
+      if (res.ok) {
+        const d = await res.json();
+        setAgentStatus(d);
+      }
+    } catch(e) {}
+  }, [resolvedParams.id]);
+
+  useEffect(() => {
+     const interval = setInterval(fetchAgentStatus, 5000);
+     fetchAgentStatus();
+     return () => clearInterval(interval);
+  }, [fetchAgentStatus]);
 
   // Chart tick — reads actual WebSocket-driven counters instead of Math.random()
   useEffect(() => {
@@ -269,6 +288,50 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
                     <div className="text-sm font-medium text-red-400">{stats.failed > 0 ? ((stats.failed / stats.dialed) * 100).toFixed(1) : 0}%</div>
                  </div>
             </div>
+
+            {/* Live Transfer Feed */}
+            <div className="bg-background/60 backdrop-blur-xl border border-white/10 rounded-2xl p-6 mt-6">
+               <h3 className="text-lg font-medium text-white flex items-center gap-2 mb-6"><PhoneForwarded className="w-5 h-5 text-purple-400" /> Live Transfers</h3>
+               <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                  {activeTransfers.length === 0 ? (
+                    <div className="text-center py-8 text-muted-foreground text-sm border border-dashed border-white/10 rounded-xl">
+                       No live transfers yet.
+                    </div>
+                  ) : (
+                    activeTransfers.map((t: any, i: number) => (
+                      <div key={`${t.uuid}-${i}`} className="bg-white/5 border border-white/5 p-4 rounded-xl flex items-center justify-between">
+                         <div>
+                            <div className="text-white font-medium mb-1">{t.caller_number}</div>
+                            <div className="text-xs text-muted-foreground flex items-center gap-1.5">
+                               <Clock className="w-3 h-3" /> Queue: {t.queue}
+                            </div>
+                         </div>
+                         <div className="text-right">
+                            {t.status === 'bridged' && t.agent_name ? (
+                              <>
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                   Connected
+                                </span>
+                                <div className="text-xs text-emerald-400/80 mt-1.5 font-medium">
+                                   {t.agent_name} ({t.agent_extension})
+                                </div>
+                              </>
+                            ) : (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                                 <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                                 Bridging
+                              </span>
+                            )}
+                            <div className="text-xs text-muted-foreground mt-1.5 opacity-60">
+                               {new Date(t.timestamp).toLocaleTimeString()}
+                            </div>
+                         </div>
+                      </div>
+                    ))
+                  )}
+               </div>
+            </div>
          </div>
 
          <div className="lg:col-span-1 border border-white/10 bg-background/60 backdrop-blur-2xl rounded-2xl p-6 relative overflow-hidden">
@@ -289,6 +352,31 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
                      <p className="text-xs text-muted-foreground text-center font-mono opacity-60">
                         {stats.dialed.toLocaleString()} / {stats.total.toLocaleString()} Dials Fired
                      </p>
+                 </div>
+             </div>
+
+             <div className="relative z-10 mt-10">
+                 <h3 className="text-lg font-medium text-white mb-6 flex items-center gap-2"><Users className="w-5 h-5 text-emerald-400" /> Agent Status</h3>
+                 
+                 <div className="space-y-2.5 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                    {agentStatus.length === 0 ? (
+                       <p className="text-sm text-muted-foreground">No agents assigned.</p>
+                    ) : (
+                       agentStatus.map((agent: any) => (
+                         <div key={agent.id} className="flex items-center justify-between bg-white/5 border border-white/5 p-3 rounded-lg">
+                            <div className="flex items-center gap-3">
+                               <div className={`w-2.5 h-2.5 rounded-full ${agent.status === 'Available' ? 'bg-emerald-400 shadow-[0_0_8px_rgba(16,185,129,0.5)]' : 'bg-neutral-500'}`} />
+                               <div>
+                                  <span className="text-sm font-medium text-white block">{agent.name || agent.extension}</span>
+                                  <span className="text-xs text-muted-foreground block">{agent.extension}</span>
+                               </div>
+                            </div>
+                            <span className={`text-xs px-2 py-1 rounded ${agent.status === 'Available' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' : 'bg-white/5 text-muted-foreground border border-white/10'}`}>
+                               {agent.status}
+                            </span>
+                         </div>
+                       ))
+                    )}
                  </div>
              </div>
          </div>

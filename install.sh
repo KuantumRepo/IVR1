@@ -410,33 +410,24 @@ if ! command -v fail2ban-client &> /dev/null; then
 fi
 success "fail2ban installed"
 
-# Deploy FreeSWitch-specific filter
+# Deploy FreeSWitch-specific filter (with Docker JSON datepattern)
 if [ -f "fail2ban/filter.d/freeswitch.conf" ]; then
     cp fail2ban/filter.d/freeswitch.conf /etc/fail2ban/filter.d/freeswitch.conf
-    success "Deployed FreeSWitch auth-failure filter"
+    success "Deployed FreeSWitch auth-failure filter (Docker JSON format)"
 else
     warn "fail2ban/filter.d/freeswitch.conf not found — skipping filter deploy"
 fi
 
 # Deploy jail config (logpath will be set after containers start)
-cat <<'JAIL' > /etc/fail2ban/jail.local
-[DEFAULT]
-ignoreip = 127.0.0.1/8 ::1 172.16.0.0/12 10.0.0.0/8
+if [ -f "fail2ban/jail.local" ]; then
+    cp fail2ban/jail.local /etc/fail2ban/jail.local
+    success "Deployed fail2ban jail config (3 retries / 24h ban)"
+else
+    warn "fail2ban/jail.local not found — skipping jail deploy"
+fi
 
-[freeswitch]
-enabled  = true
-filter   = freeswitch
-backend  = auto
-# LOGPATH_PLACEHOLDER — updated by install.sh after containers start
-logpath  = /var/log/freeswitch.log
-port     = 5060,5061,5080,5081
-protocol = all
-maxretry = 5
-findtime = 600
-bantime  = 3600
-action   = iptables-allports[name=freeswitch, protocol=all]
-JAIL
-success "Deployed fail2ban jail config (logpath updated after container start)"
+# Remove any stale jail.d override that could conflict
+rm -f /etc/fail2ban/jail.d/freeswitch.conf 2>/dev/null
 
 info "fail2ban will be activated after containers start (Phase 5)."
 
@@ -514,13 +505,33 @@ info "Waiting for services to initialize (30 seconds)..."
 sleep 30
 
 # ── Activate fail2ban with correct Docker log path ──────────────────────────
-FS_LOG_PATH=$(docker inspect $($COMPOSE ps -q freeswitch 2>/dev/null) --format '{{.LogPath}}' 2>/dev/null || echo "")
-if [ -n "$FS_LOG_PATH" ] && [ -f /etc/fail2ban/jail.local ]; then
+# FreeSWITCH uses --network host, so Docker log path via 'docker inspect'.
+# We find the container by name (works regardless of Compose project name).
+FS_CONTAINER_ID=$(docker inspect ivr1-freeswitch-1 --format '{{.Id}}' 2>/dev/null || true)
+if [ -z "$FS_CONTAINER_ID" ]; then
+    # Fallback: try finding by service label
+    FS_CONTAINER_ID=$(docker ps --filter "name=freeswitch" --format '{{.ID}}' | head -1)
+    FS_CONTAINER_ID=$(docker inspect "$FS_CONTAINER_ID" --format '{{.Id}}' 2>/dev/null || true)
+fi
+
+if [ -n "$FS_CONTAINER_ID" ] && [ -f /etc/fail2ban/jail.local ]; then
+    FS_LOG_PATH="/var/lib/docker/containers/${FS_CONTAINER_ID}/${FS_CONTAINER_ID}-json.log"
     sed -i "s|logpath.*=.*|logpath  = ${FS_LOG_PATH}|" /etc/fail2ban/jail.local
+    # Remove any stale jail.d conflicts
+    rm -f /etc/fail2ban/jail.d/freeswitch.conf 2>/dev/null
     systemctl restart fail2ban 2>/dev/null || true
-    success "fail2ban activated — monitoring FreeSWitch logs for scanner attacks"
+    sleep 2
+    # Verify it started correctly
+    if fail2ban-client status freeswitch &>/dev/null; then
+        BANNED=$(fail2ban-client status freeswitch 2>/dev/null | grep 'Currently banned' | awk '{print $NF}')
+        success "fail2ban active — monitoring FreeSWitch (${BANNED:-0} IPs currently banned)"
+    else
+        warn "fail2ban started but freeswitch jail may not be active — check 'fail2ban-client status'"
+    fi
 else
-    warn "Could not determine FreeSWitch container log path — fail2ban not activated"
+    warn "Could not determine FreeSWitch container ID — fail2ban not activated."
+    warn "After deployment, run: docker inspect ivr1-freeswitch-1 --format '{{.LogPath}}'"
+    warn "Then update logpath in /etc/fail2ban/jail.local and restart fail2ban."
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════════

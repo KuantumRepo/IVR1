@@ -7,6 +7,7 @@ import TestTrunkModal from "./TestTrunkModal";
 
 export default function GatewaysPage() {
   const [gateways, setGateways] = useState<any[]>([]);
+  const [gwStatuses, setGwStatuses] = useState<Record<string, any>>({});
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isTestModalOpen, setIsTestModalOpen] = useState(false);
   const [formData, setFormData] = useState({
@@ -22,8 +23,23 @@ export default function GatewaysPage() {
     }
   };
 
+  const fetchGatewayStatuses = async () => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || '/api/v1'}/sip-gateways/status`);
+      if (res.ok) {
+        const data = await res.json();
+        const map: Record<string, any> = {};
+        data.forEach((s: any) => { map[s.id] = s; });
+        setGwStatuses(map);
+      }
+    } catch (err) { /* silent */ }
+  };
+
   useEffect(() => {
     fetchGateways();
+    fetchGatewayStatuses();
+    const interval = setInterval(fetchGatewayStatuses, 10000);
+    return () => clearInterval(interval);
   }, []);
 
   const handleAddGateway = async (e: React.FormEvent) => {
@@ -98,13 +114,14 @@ export default function GatewaysPage() {
               <th className="font-medium text-muted-foreground p-4">Host</th>
               <th className="font-medium text-muted-foreground p-4">Auth Username</th>
               <th className="font-medium text-muted-foreground p-4">Type</th>
+              <th className="font-medium text-muted-foreground p-4">Status</th>
               <th className="font-medium text-muted-foreground p-4 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
             {gateways.length === 0 ? (
               <tr>
-                <td colSpan={5} className="p-12 text-center text-muted-foreground">
+                <td colSpan={6} className="p-12 text-center text-muted-foreground">
                   <PhoneCall className="w-8 h-8 opacity-50 mx-auto mb-3" />
                   No SIP Gateways connected. Without a trunk, FreeSWITCH cannot dial out.
                 </td>
@@ -120,6 +137,38 @@ export default function GatewaysPage() {
                       ${trunk.auth_type === 'IP_BASED' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' : 'bg-purple-500/10 text-purple-400 border-purple-500/20'}`}>
                       {trunk.auth_type === 'IP_BASED' ? 'IP AUTH' : 'REGISTRATION'}
                     </span>
+                  </td>
+                  <td className="p-4">
+                    {(() => {
+                      const st = gwStatuses[trunk.id];
+                      const state = st?.sofia_state || 'UNKNOWN';
+                      const statusColors: Record<string, string> = {
+                        REGED: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+                        NOREG: 'bg-blue-500/10 text-blue-400 border-blue-500/20',
+                        FAIL_WAIT: 'bg-red-500/10 text-red-400 border-red-500/20',
+                        TRYING: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
+                        UNREGED: 'bg-red-500/10 text-red-400 border-red-500/20',
+                        UNKNOWN: 'bg-zinc-500/10 text-zinc-400 border-zinc-500/20',
+                      };
+                      const labels: Record<string, string> = {
+                        REGED: 'REGISTERED',
+                        NOREG: 'NO REG (IP)',
+                        FAIL_WAIT: 'DOWN',
+                        TRYING: 'CONNECTING',
+                        UNREGED: 'UNREGISTERED',
+                        UNKNOWN: 'UNKNOWN',
+                      };
+                      const css = statusColors[state] || statusColors.UNKNOWN;
+                      const label = labels[state] || state;
+                      return (
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${css}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full ${
+                            state === 'REGED' || state === 'NOREG' ? 'bg-emerald-400' : state === 'TRYING' ? 'bg-yellow-400 animate-pulse' : 'bg-red-400'
+                          }`} />
+                          {label}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="p-4 text-right flex justify-end gap-3">
                     <button onClick={() => handleDeleteGateway(trunk.id)} className="text-xs font-medium text-destructive-foreground hover:text-red-400 transition-colors bg-red-500/10 px-2.5 py-1 rounded-md">Delete</button>

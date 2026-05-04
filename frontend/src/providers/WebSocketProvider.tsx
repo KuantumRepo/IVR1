@@ -7,9 +7,25 @@ export type WebSocketEvent = {
   campaign_id?: string;
   campaign_name?: string;
   phone_number?: string;
+  caller_number?: string;
   timestamp?: string;
   cause?: string;
   active_calls?: number;
+  queue?: string;
+  uuid?: string;
+  agent_name?: string;
+  agent_extension?: string;
+};
+
+export type TransferEvent = {
+  uuid: string;
+  campaign_id: string;
+  caller_number: string;
+  queue: string;
+  timestamp: string;
+  status: "queued" | "bridged" | "completed";
+  agent_name?: string;
+  agent_extension?: string;
 };
 
 interface DashboardStats {
@@ -22,6 +38,7 @@ interface WebSocketContextType {
   isConnected: boolean;
   events: WebSocketEvent[];
   stats: DashboardStats;
+  transfers: TransferEvent[];
 }
 
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined);
@@ -29,6 +46,7 @@ const WebSocketContext = createContext<WebSocketContextType | undefined>(undefin
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   const [isConnected, setIsConnected] = useState(false);
   const [events, setEvents] = useState<WebSocketEvent[]>([]);
+  const [transfers, setTransfers] = useState<TransferEvent[]>([]);
   // We initialize the chart with 60 seconds of zero values
   const [stats, setStats] = useState<DashboardStats>({
     activeCalls: 0,
@@ -94,6 +112,24 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               activeCalls: Math.max(0, prev.activeCalls - 1),
               totalAnswered: event.cause === "NORMAL_CLEARING" ? prev.totalAnswered + 1 : prev.totalAnswered
             }));
+          } else if (event.event === "TRANSFER_INITIATED") {
+            // Track live transfers for campaign detail pages
+            const transfer: TransferEvent = {
+              uuid: event.uuid || "",
+              campaign_id: event.campaign_id || "",
+              caller_number: event.caller_number || event.phone_number || "Unknown",
+              queue: event.queue || "",
+              timestamp: event.timestamp || new Date().toISOString(),
+              status: "queued",
+            };
+            setTransfers(prev => [transfer, ...prev].slice(0, 30));
+          } else if (event.event === "TRANSFER_BRIDGED") {
+            // Update existing transfer with agent info when agent picks up
+            setTransfers(prev => prev.map(t =>
+              t.uuid === event.uuid
+                ? { ...t, status: "bridged" as const, agent_name: event.agent_name, agent_extension: event.agent_extension }
+                : t
+            ));
           }
         } catch (e) {
           console.error("Failed to parse WS message", e);
@@ -126,7 +162,7 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   return (
-    <WebSocketContext.Provider value={{ isConnected, events, stats }}>
+    <WebSocketContext.Provider value={{ isConnected, events, stats, transfers }}>
       {children}
     </WebSocketContext.Provider>
   );

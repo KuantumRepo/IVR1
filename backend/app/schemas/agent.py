@@ -25,6 +25,8 @@ class AgentResponse(BaseModel):
     current_calls: int
     sip_registered: bool = False
     sip_user_agent: Optional[str] = None
+    callcenter_status: Optional[str] = None   # Available, Logged Out, On Break
+    callcenter_state: Optional[str] = None     # Waiting, Receiving, In a queue call
     created_at: datetime
     updated_at: datetime
     

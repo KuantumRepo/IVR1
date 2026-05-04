@@ -117,22 +117,92 @@ async def create_agent(agent_in: AgentCreate, db: AsyncSession = Depends(get_db)
 
 @router.get("/", response_model=List[AgentResponse])
 async def list_agents(db: AsyncSession = Depends(get_db)):
-    """List agents with live SIP registration status from FreeSWITCH."""
+    """List agents with live SIP registration AND callcenter status from FreeSWITCH."""
+    import asyncio
+    
     result = await db.execute(select(Agent))
     agents = result.scalars().all()
     
-    # Fetch live registrations from FreeSWITCH (XML format for reliable multi-agent parsing)
-    reg_data = await esl_manager.api("sofia xmlstatus profile internal reg")
-    registered_exts = _parse_sofia_registrations_xml(reg_data)
+    # ── Raw ESL query for both SIP registration + callcenter status ──
+    registered_exts: dict[str, dict] = {}
+    cc_agents: dict[str, dict] = {}
+    
+    try:
+        reader, writer = await asyncio.open_connection(
+            settings.FS_ESL_HOST, settings.FS_ESL_PORT
+        )
+
+        async def read_event() -> dict:
+            headers = {}
+            while True:
+                line = await reader.readline()
+                line = line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    break
+                if ":" in line:
+                    key, val = line.split(":", 1)
+                    headers[key.strip()] = val.strip()
+            body = ""
+            if "Content-Length" in headers:
+                length = int(headers["Content-Length"])
+                raw = await reader.readexactly(length)
+                body = raw.decode("utf-8", errors="replace")
+            headers["body"] = body
+            return headers
+
+        # Auth
+        await read_event()
+        writer.write(f"auth {settings.FS_ESL_PASSWORD}\n\n".encode())
+        await writer.drain()
+        await read_event()
+
+        # 1) SIP registration (XML)
+        writer.write(b"api sofia xmlstatus profile internal reg\n\n")
+        await writer.drain()
+        sip_resp = await read_event()
+        sip_xml = sip_resp.get("body", "")
+        registered_exts = _parse_sofia_registrations_xml(sip_xml)
+
+        # 2) Callcenter agent list
+        writer.write(b"api callcenter_config agent list\n\n")
+        await writer.drain()
+        cc_resp = await read_event()
+        cc_body = cc_resp.get("body", "")
+        
+        for line in cc_body.strip().split("\n"):
+            if "|" not in line or line.startswith("name"):
+                continue
+            parts = line.split("|")
+            if len(parts) >= 7:
+                ext = parts[0]
+                cc_agents[ext] = {
+                    "status": parts[5],    # Available, Logged Out, On Break
+                    "state": parts[6],     # Waiting, Receiving, In a queue call
+                }
+
+        writer.close()
+        await writer.wait_closed()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Raw ESL agent query failed: {e}")
     
     results = []
     for agent in agents:
         resp = AgentResponse.model_validate(agent)
         ext = agent.sip_extension or agent.phone_or_sip
+        
+        # SIP registration
         reg_info = registered_exts.get(ext)
         if reg_info:
             resp.sip_registered = True
             resp.sip_user_agent = reg_info.get("user_agent")
+        
+        # Callcenter status
+        cc_info = cc_agents.get(str(ext))
+        if cc_info:
+            resp.callcenter_status = cc_info.get("status")
+            resp.callcenter_state = cc_info.get("state")
+        
         results.append(resp)
     
     return results

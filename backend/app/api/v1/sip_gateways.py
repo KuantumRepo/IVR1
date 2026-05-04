@@ -41,7 +41,7 @@ def generate_freeswitch_xml(gateway: SipGateway) -> str:
     <param name="password" value="not-used"/>
     <param name="register" value="false"/>
     <param name="caller-id-in-from" value="true"/>
-    <param name="dtmf-type" value="none"/>
+    <param name="dtmf-type" value="rfc2833"/>
     <param name="ping" value="25"/>
   </gateway>
 </include>
@@ -58,7 +58,7 @@ def generate_freeswitch_xml(gateway: SipGateway) -> str:
     <param name="password" value="{password}"/>
     <param name="register" value="true"/>
     <param name="caller-id-in-from" value="true"/>
-    <param name="dtmf-type" value="none"/>
+    <param name="dtmf-type" value="rfc2833"/>
     <param name="ping" value="25"/>
   </gateway>
 </include>

@@ -423,7 +423,7 @@ async def on_channel_bridge(event):
                 "event": "TRANSFER_BRIDGED",
                 "uuid": uuid,
                 "campaign_id": campaign_id,
-                "caller_number": caller_num,
+                "phone_number": caller_num,
                 "agent_name": agent_name,
                 "agent_extension": agent_ext,
                 "timestamp": datetime.now(timezone.utc).isoformat()
@@ -563,6 +563,7 @@ async def on_hangup(event):
 
             payload = {
                 "event":        "CALL_ENDED",
+                "uuid":         event.get("Unique-ID"),
                 "phone_number": phone_number,
                 "cause":        cause,
                 "campaign_id":  campaign_id,
@@ -827,7 +828,7 @@ async def on_execute_complete(event):
                     await publish_event("dashboard_events", _json.dumps({
                         "event": "TRANSFER_INITIATED",
                         "campaign_id": campaign_id,
-                        "caller_number": caller_number,
+                        "phone_number": caller_number,
                         "queue": queue_name,
                         "uuid": uuid,
                         "timestamp": datetime.now(timezone.utc).isoformat()

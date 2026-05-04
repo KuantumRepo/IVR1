@@ -15,6 +15,28 @@ const initialData = Array(30).fill(0).map((_, i) => ({
   transferred: 0
 }));
 
+const LiveDuration = ({ startTime, endTime }: { startTime: string, endTime?: string }) => {
+  const [duration, setDuration] = useState<number>(0);
+
+  useEffect(() => {
+    if (endTime) {
+      setDuration(Math.floor((new Date(endTime).getTime() - new Date(startTime).getTime()) / 1000));
+      return;
+    }
+    const update = () => {
+      setDuration(Math.floor((new Date().getTime() - new Date(startTime).getTime()) / 1000));
+    };
+    update();
+    const interval = setInterval(update, 1000);
+    return () => clearInterval(interval);
+  }, [startTime, endTime]);
+
+  const mins = Math.floor(duration / 60).toString().padStart(2, '0');
+  const secs = (duration % 60).toString().padStart(2, '0');
+  
+  return <span>{mins}:{secs}</span>;
+};
+
 export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: string }> }) {
   const resolvedParams = use(params);
   const [data, setData] = useState(initialData);
@@ -298,37 +320,52 @@ export default function LiveCampaignMonitor({ params }: { params: Promise<{ id: 
                        No live transfers yet.
                     </div>
                   ) : (
-                    activeTransfers.map((t: any, i: number) => (
+                    activeTransfers.map((t: any, i: number) => {
+                      const waitTimeSecs = Math.floor((new Date(t.bridgedAt || t.completedAt || new Date()).getTime() - new Date(t.timestamp).getTime()) / 1000);
+                      
+                      return (
                       <div key={`${t.uuid}-${i}`} className="bg-white/5 border border-white/5 p-4 rounded-xl flex items-center justify-between">
                          <div>
-                            <div className="text-white font-medium mb-1">{t.caller_number}</div>
+                            <div className="text-white font-medium mb-1">{t.phone_number}</div>
                             <div className="text-xs text-muted-foreground flex items-center gap-1.5">
-                               <Clock className="w-3 h-3" /> Queue: {t.queue}
+                               <Clock className="w-3 h-3" /> Queue: {t.queue} • Wait: {waitTimeSecs}s
                             </div>
                          </div>
                          <div className="text-right">
-                            {t.status === 'bridged' && t.agent_name ? (
-                              <>
-                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                                   Connected
-                                </span>
-                                <div className="text-xs text-emerald-400/80 mt-1.5 font-medium">
-                                   {t.agent_name} ({t.agent_extension})
-                                </div>
-                              </>
+                            {t.status === 'completed' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-neutral-500/10 text-neutral-400 border border-neutral-500/20">
+                                 <CheckCircle2 className="w-3 h-3" /> Completed
+                              </span>
+                            ) : t.status === 'abandoned' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-red-500/10 text-red-400 border border-red-500/20">
+                                 <XCircle className="w-3 h-3" /> Abandoned
+                              </span>
+                            ) : t.status === 'bridged' ? (
+                              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                                 Connected
+                              </span>
                             ) : (
                               <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
                                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
                                  Bridging
                               </span>
                             )}
+                            
+                            {t.agent_name && (
+                                <div className={`text-xs mt-1.5 font-medium flex items-center justify-end gap-1 ${t.status === 'completed' ? 'text-neutral-400' : 'text-emerald-400/80'}`}>
+                                   {t.agent_name} ({t.agent_extension}) 
+                                   {t.bridgedAt && (
+                                     <>• <LiveDuration startTime={t.bridgedAt} endTime={t.completedAt} /></>
+                                   )}
+                                </div>
+                            )}
                             <div className="text-xs text-muted-foreground mt-1.5 opacity-60">
                                {new Date(t.timestamp).toLocaleTimeString()}
                             </div>
                          </div>
                       </div>
-                    ))
+                    )})
                   )}
                </div>
             </div>

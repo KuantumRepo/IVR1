@@ -20,12 +20,14 @@ export type WebSocketEvent = {
 export type TransferEvent = {
   uuid: string;
   campaign_id: string;
-  caller_number: string;
+  phone_number: string;
   queue: string;
   timestamp: string;
-  status: "queued" | "bridged" | "completed";
+  status: "queued" | "bridged" | "completed" | "abandoned";
   agent_name?: string;
   agent_extension?: string;
+  bridgedAt?: string;
+  completedAt?: string;
 };
 
 interface DashboardStats {
@@ -112,12 +114,31 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
               activeCalls: Math.max(0, prev.activeCalls - 1),
               totalAnswered: event.cause === "NORMAL_CLEARING" ? prev.totalAnswered + 1 : prev.totalAnswered
             }));
+
+            // If this was a live transfer, mark it as completed or abandoned
+            if (event.uuid) {
+              setTransfers(prev => prev.map(t => {
+                if (t.uuid === event.uuid) {
+                  return {
+                    ...t,
+                    status: event.cause === "NORMAL_CLEARING" ? "completed" : "abandoned",
+                    completedAt: event.timestamp || new Date().toISOString()
+                  };
+                }
+                return t;
+              }));
+
+              // Auto-remove terminal cards after 60 seconds
+              setTimeout(() => {
+                setTransfers(prev => prev.filter(t => t.uuid !== event.uuid));
+              }, 60000);
+            }
           } else if (event.event === "TRANSFER_INITIATED") {
             // Track live transfers for campaign detail pages
             const transfer: TransferEvent = {
               uuid: event.uuid || "",
               campaign_id: event.campaign_id || "",
-              caller_number: event.caller_number || event.phone_number || "Unknown",
+              phone_number: event.phone_number || event.caller_number || "Unknown",
               queue: event.queue || "",
               timestamp: event.timestamp || new Date().toISOString(),
               status: "queued",
@@ -127,7 +148,13 @@ export function WebSocketProvider({ children }: { children: React.ReactNode }) {
             // Update existing transfer with agent info when agent picks up
             setTransfers(prev => prev.map(t =>
               t.uuid === event.uuid
-                ? { ...t, status: "bridged" as const, agent_name: event.agent_name, agent_extension: event.agent_extension }
+                ? { 
+                    ...t, 
+                    status: "bridged" as const, 
+                    agent_name: event.agent_name, 
+                    agent_extension: event.agent_extension,
+                    bridgedAt: event.timestamp || new Date().toISOString()
+                  }
                 : t
             ));
           }

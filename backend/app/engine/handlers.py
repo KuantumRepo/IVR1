@@ -389,6 +389,7 @@ async def on_channel_bridge(event):
         
     caller_num = event.get("variable_contact_phone") or event.get("Caller-Destination-Number", "Unknown")
     campaign_id = event.get("variable_campaign_id", "Unknown")
+    uuid = event.get("Unique-ID", "")
     
     logger.info(f"mod_callcenter bridged call to agent {cc_agent} (Caller: {caller_num})")
     
@@ -397,7 +398,14 @@ async def on_channel_bridge(event):
             # Look up the agent based on their extension/sip which is stored in phone_or_sip
             result = await db.execute(select(Agent).where(Agent.phone_or_sip == cc_agent))
             agent = result.scalar_one_or_none()
+            
+            agent_name = cc_agent  # fallback to extension
+            agent_ext = cc_agent
             if agent:
+                agent_name = agent.name or cc_agent
+                agent_ext = agent.phone_or_sip or cc_agent
+                
+                # Screen pop for the agent's softphone UI
                 payload = {
                     "event": "AGENT_RINGING",
                     "agent_id": str(agent.id),
@@ -407,6 +415,21 @@ async def on_channel_bridge(event):
                 }
                 await publish_event(f"agent_events:{agent.id}", json.dumps(payload))
                 logger.info(f"Published screen pop for Agent {agent.id}")
+            
+            # ── Publish bridge info to live transfer dashboard ────────────
+            # This updates the transfer card from "Bridging" to show the
+            # agent name/extension who actually picked up the call.
+            bridge_payload = {
+                "event": "TRANSFER_BRIDGED",
+                "uuid": uuid,
+                "campaign_id": campaign_id,
+                "caller_number": caller_num,
+                "agent_name": agent_name,
+                "agent_extension": agent_ext,
+                "timestamp": datetime.now(timezone.utc).isoformat()
+            }
+            await publish_event("dashboard_events", json.dumps(bridge_payload))
+            
         except Exception as e:
             logger.error(f"Failed to lookup agent for screen pop: {e}", exc_info=True)
 esl_manager.register_handler("CHANNEL_BRIDGE", on_channel_bridge)
@@ -462,12 +485,9 @@ async def on_hangup(event):
             camp = await db.get(Campaign, UUID(campaign_id)) if campaign_id else None
 
             # ── Update campaign counters ──────────────────────────────────
-            # dialed_count: incremented here (at network disposition time)
-            # rather than at originate dispatch time — only counts calls
-            # that actually reached the SIP network.
+            # dialed_count is incremented at originate dispatch time (in the
+            # dialer) for real-time visibility. Here we only track failures.
             if camp:
-                camp.dialed_count += 1
-
                 # Determine if this was a failure (non-normal, non-answer disposition)
                 is_answered = cause == 'NORMAL_CLEARING'
                 is_retryable = cause in RETRYABLE_SIP_CAUSES
@@ -620,7 +640,9 @@ async def _play_ivr_node(uuid: str, node_id: UUID, session, is_test: bool = Fals
     #    mangling, and carriers that strip RFC2833 telephone-event.
     #    CRITICAL: Do NOT also enable start_dtmf — running two detectors
     #    simultaneously causes double-detection feedback loops.
-    await esl_manager.execute(uuid, "spandsp_start_dtmf", "")
+    logger.info(f"Executing spandsp_start_dtmf on {uuid}...")
+    spandsp_res = await esl_manager.execute(uuid, "spandsp_start_dtmf", "")
+    logger.info(f"Response from spandsp_start_dtmf: {spandsp_res}")
     
     # 2. Flush the channel buffer to instantly destroy lingering inputs from previous menus
     await esl_manager.execute(uuid, "flush_dtmf", "")
@@ -802,8 +824,8 @@ async def on_execute_complete(event):
                 # Publish transfer event for live dashboard
                 try:
                     import json as _json
-                    await publish_event("campaign_events", _json.dumps({
-                        "type": "TRANSFER_INITIATED",
+                    await publish_event("dashboard_events", _json.dumps({
+                        "event": "TRANSFER_INITIATED",
                         "campaign_id": campaign_id,
                         "caller_number": caller_number,
                         "queue": queue_name,

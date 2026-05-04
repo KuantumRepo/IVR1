@@ -155,6 +155,51 @@ class CampaignDialer:
         if campaign.sip_gateways:
             gw = campaign.sip_gateways[0]
             prefix = f"sofia/gateway/{gw.id}/" if gw.id else "sofia/external/"
+            
+            # ── Gateway health pre-check ──────────────────────────────────
+            # Query sofia to verify the gateway is UP before wasting an
+            # originate attempt on a dead trunk. FreeSWITCH will accept the
+            # bgapi originate even for a DOWN gateway, but the call fails
+            # immediately at the SIP layer — causing phantom metrics.
+            if gw.id:
+                try:
+                    gw_status = await esl_manager.api(f"sofia status gateway {gw.id}")
+                    gw_status_str = str(gw_status).strip() if gw_status else ""
+                    
+                    # Parse gateway state from the "State" line
+                    # Valid states: REGED (registered), NOREG (IP auth, no reg needed)
+                    # Bad states: FAIL_WAIT, TRYING, UNREGED, DOWN
+                    is_healthy = False
+                    for line in gw_status_str.split("\n"):
+                        line = line.strip()
+                        if line.startswith("State"):
+                            state_val = line.split("\t")[-1].strip()
+                            is_healthy = state_val in ("REGED", "NOREG")
+                            if not is_healthy:
+                                logger.error(
+                                    f"Gateway {gw.id} ({gw.name}) is {state_val} — "
+                                    f"skipping originate for {item.phone_number}"
+                                )
+                            break
+                    
+                    if not is_healthy:
+                        # Roll back Redis counter and reschedule the item for retry
+                        redis_key = f"campaign_active:{campaign.id}"
+                        current_val = await redis_client.decr(redis_key)
+                        if current_val is not None and int(current_val) < 0:
+                            await redis_client.set(redis_key, 0)
+                        
+                        # Reschedule for 60s later instead of permanently failing
+                        async with AsyncSessionLocal() as cleanup_db:
+                            q = await cleanup_db.get(DialQueue, item.id)
+                            if q:
+                                q.locked_by = None
+                                q.locked_at = None
+                                q.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=60)
+                                await cleanup_db.commit()
+                        return
+                except Exception as e:
+                    logger.warning(f"Gateway health check failed: {e} — proceeding with originate")
 
         dial_string = f"{prefix}{item.phone_number}"
 
@@ -230,8 +275,6 @@ class CampaignDialer:
             f"vm_drop_audio_id={vm_drop_id_val},"
             f"amd_config={amd_config_val},"
             f"ignore_early_media=true,"
-            f"absolute_codec_string=PCMU,"
-            f"dtmf_type=rfc2833,"
             f"disable_video=true,"
             f"origination_caller_id_number={caller_id_number}}}"
         )
@@ -282,6 +325,19 @@ class CampaignDialer:
                 return
 
             logger.info(f"Originate dispatched for {item.phone_number}")
+            
+            # ── Increment dialed_count immediately at dispatch time ────────
+            # This ensures the "Dials Fired" counter on the dashboard updates
+            # in real-time as calls go out, not after they hang up.
+            try:
+                async with AsyncSessionLocal() as dial_db:
+                    camp = await dial_db.get(Campaign, campaign.id)
+                    if camp:
+                        camp.dialed_count += 1
+                        await dial_db.commit()
+            except Exception as e:
+                logger.warning(f"Failed to increment dialed_count: {e}")
+            
             # Publish CALL_STARTED only AFTER confirmed dispatch —
             # prevents phantom events on the dashboard for failed originates.
             payload = {
